@@ -178,7 +178,7 @@ pub fn resolve<DP: DependencyProvider>(
 /// An enum used by [DependencyProvider] that holds information about package dependencies.
 /// For each [Package] there is a set of versions allowed as a dependency.
 #[derive(Clone)]
-pub enum Dependencies<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
+pub enum Dependencies<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
     /// Package dependencies are unavailable with the reason why they are missing.
     Unavailable(M),
     /// Container for all available package versions.
@@ -212,7 +212,7 @@ pub trait DependencyProvider {
     ///
     /// The intended use is to track them in an enum and assign them to this type. You can also
     /// assign [`String`] as placeholder.
-    type M: Eq + Clone + Debug + Display;
+    type M: Clone + Debug + Display;
 
     /// [Decision making](https://github.com/dart-lang/pub/blob/master/doc/solver.md#decision-making)
     /// is the process of choosing the next package

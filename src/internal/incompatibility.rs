@@ -28,7 +28,7 @@ use crate::{
 /// during conflict resolution. More about all this in
 /// [PubGrub documentation](https://github.com/dart-lang/pub/blob/master/doc/solver.md#incompatibility).
 #[derive(Debug, Clone)]
-pub(crate) struct Incompatibility<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
+pub(crate) struct Incompatibility<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
     package_terms: SmallMap<P, Term<VS>>,
     kind: Kind<P, VS, M>,
 }
@@ -43,7 +43,7 @@ pub(crate) type IncompDpId<DP> = IncompId<
 >;
 
 #[derive(Debug, Clone)]
-enum Kind<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
+enum Kind<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
     /// Initial incompatibility aiming at picking the root package for the first decision.
     ///
     /// This incompatibility drives the resolution, it requires that we pick the (virtual) root
@@ -91,7 +91,7 @@ pub(crate) enum Relation<P: Package> {
     Inconclusive,
 }
 
-impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Incompatibility<P, VS, M> {
+impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> Incompatibility<P, VS, M> {
     /// Create the initial "not Root" incompatibility.
     pub(crate) fn not_root(package: P, version: VS::V) -> Self {
         Self {
@@ -306,7 +306,7 @@ impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Incompatibilit
     }
 }
 
-impl<'a, P: Package, VS: VersionSet + 'a, M: Eq + Clone + Debug + Display + 'a>
+impl<'a, P: Package, VS: VersionSet + 'a, M: Clone + Debug + Display + 'a>
     Incompatibility<P, VS, M>
 {
     /// CF definition of Relation enum.
@@ -336,9 +336,7 @@ impl<'a, P: Package, VS: VersionSet + 'a, M: Eq + Clone + Debug + Display + 'a>
     }
 }
 
-impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Display
-    for Incompatibility<P, VS, M>
-{
+impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> Display for Incompatibility<P, VS, M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,

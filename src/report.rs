@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::{Map, Package, Set, Term, VersionSet};
 
 /// Reporter trait.
-pub trait Reporter<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
+pub trait Reporter<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
     /// Output type of the report.
     type Output;
 
@@ -29,7 +29,7 @@ pub trait Reporter<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> 
 /// Derivation tree resulting in the impossibility
 /// to solve the dependencies of our root package.
 #[derive(Debug, Clone)]
-pub enum DerivationTree<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
+pub enum DerivationTree<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
     /// External incompatibility.
     External(External<P, VS, M>),
     /// Incompatibility derived from two others.
@@ -39,7 +39,7 @@ pub enum DerivationTree<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Disp
 /// Incompatibilities that are not derived from others,
 /// they have their own reason.
 #[derive(Debug, Clone)]
-pub enum External<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
+pub enum External<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
     /// Initial incompatibility aiming at picking the root package for the first decision.
     NotRoot(P, VS::V),
     /// There are no versions in the given set for this package.
@@ -52,7 +52,7 @@ pub enum External<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
 
 /// Incompatibility derived from two others.
 #[derive(Debug, Clone)]
-pub struct Derived<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
+pub struct Derived<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
     /// Terms of the incompatibility.
     pub terms: Map<P, Term<VS>>,
     /// Indicate if that incompatibility is present multiple times
@@ -67,7 +67,7 @@ pub struct Derived<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> 
     pub cause2: Arc<DerivationTree<P, VS, M>>,
 }
 
-impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> DerivationTree<P, VS, M> {
+impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> DerivationTree<P, VS, M> {
     /// Get all packages referred to in the derivation tree.
     pub fn packages(&self) -> Set<&P> {
         let mut packages = Set::default();
@@ -167,7 +167,7 @@ impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> DerivationTree
     }
 }
 
-impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Display for External<P, VS, M> {
+impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> Display for External<P, VS, M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotRoot(package, version) => {
@@ -211,7 +211,7 @@ impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Display for Ex
 }
 
 /// Trait for formatting outputs in the reporter.
-pub trait ReportFormatter<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
+pub trait ReportFormatter<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
     /// Output type of the report.
     type Output;
 
@@ -278,7 +278,7 @@ pub trait ReportFormatter<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Di
 #[derive(Default, Debug)]
 pub struct DefaultStringReportFormatter;
 
-impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> ReportFormatter<P, VS, M>
+impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> ReportFormatter<P, VS, M>
     for DefaultStringReportFormatter
 {
     type Output = String;
@@ -431,7 +431,7 @@ impl DefaultStringReporter {
     fn build_recursive<
         P: Package,
         VS: VersionSet,
-        M: Eq + Clone + Debug + Display,
+        M: Clone + Debug + Display,
         F: ReportFormatter<P, VS, M, Output = String>,
     >(
         &mut self,
@@ -451,7 +451,7 @@ impl DefaultStringReporter {
     fn build_recursive_helper<
         P: Package,
         VS: VersionSet,
-        M: Eq + Clone + Debug + Display,
+        M: Clone + Debug + Display,
         F: ReportFormatter<P, VS, M, Output = String>,
     >(
         &mut self,
@@ -540,7 +540,7 @@ impl DefaultStringReporter {
     fn report_one_each<
         P: Package,
         VS: VersionSet,
-        M: Eq + Clone + Debug + Display,
+        M: Clone + Debug + Display,
         F: ReportFormatter<P, VS, M, Output = String>,
     >(
         &mut self,
@@ -564,7 +564,7 @@ impl DefaultStringReporter {
     fn report_recurse_one_each<
         P: Package,
         VS: VersionSet,
-        M: Eq + Clone + Debug + Display,
+        M: Clone + Debug + Display,
         F: ReportFormatter<P, VS, M, Output = String>,
     >(
         &mut self,
@@ -617,7 +617,7 @@ impl DefaultStringReporter {
     }
 }
 
-impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Reporter<P, VS, M>
+impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> Reporter<P, VS, M>
     for DefaultStringReporter
 {
     type Output = String;

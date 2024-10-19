@@ -370,7 +370,7 @@ fn errors_the_same_with_only_report_dependencies<N: Package + Ord>(
         return;
     };
 
-    fn recursive<N: Package + Ord, VS: VersionSet, M: Eq + Clone + Debug + Display>(
+    fn recursive<N: Package + Ord, VS: VersionSet, M: Clone + Debug + Display>(
         to_retain: &mut Vec<(N, VS, N)>,
         tree: &DerivationTree<N, VS, M>,
     ) {

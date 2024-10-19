@@ -160,7 +160,7 @@
 //! # use pubgrub::{Package, VersionSet, DerivationTree};
 //! # use std::fmt::{Debug, Display};
 //! #
-//! pub trait Reporter<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
+//! pub trait Reporter<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
 //!     type Output;
 //!
 //!     fn report(derivation_tree: &DerivationTree<P, VS, M>) -> Self::Output;

@@ -72,14 +72,14 @@ impl<DP: DependencyProvider> Display for PartialSolution<DP> {
 /// that have already been made for a given package,
 /// as well as the intersection of terms by all of these.
 #[derive(Clone, Debug)]
-struct PackageAssignments<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
+struct PackageAssignments<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
     smallest_decision_level: DecisionLevel,
     highest_decision_level: DecisionLevel,
     dated_derivations: SmallVec<DatedDerivation<P, VS, M>>,
     assignments_intersection: AssignmentsIntersection<VS>,
 }
 
-impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Display
+impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> Display
     for PackageAssignments<P, VS, M>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -100,16 +100,14 @@ impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Display
 }
 
 #[derive(Clone, Debug)]
-struct DatedDerivation<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
+struct DatedDerivation<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
     global_index: u32,
     decision_level: DecisionLevel,
     cause: IncompId<P, VS, M>,
     accumulated_intersection: Term<VS>,
 }
 
-impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Display
-    for DatedDerivation<P, VS, M>
-{
+impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> Display for DatedDerivation<P, VS, M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}, cause: {:?}", self.decision_level, self.cause)
     }
@@ -133,7 +131,7 @@ impl<VS: VersionSet> Display for AssignmentsIntersection<VS> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum SatisfierSearch<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
+pub(crate) enum SatisfierSearch<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
     DifferentDecisionLevels {
         previous_satisfier_level: DecisionLevel,
     },
@@ -506,7 +504,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
     }
 }
 
-impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> PackageAssignments<P, VS, M> {
+impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> PackageAssignments<P, VS, M> {
     fn satisfier(
         &self,
         package: &P,
