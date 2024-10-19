@@ -56,7 +56,7 @@
 //! dependency_provider.add_dependencies("icons", 1u32, []);
 //!
 //! // Run the algorithm.
-//! let solution = resolve(&dependency_provider, "root", 1u32).unwrap();
+//! let solution = resolve(&mut dependency_provider, "root", 1u32).unwrap();
 //! ```
 //!
 //! # DependencyProvider trait
@@ -81,17 +81,17 @@
 //! type SemVS = Range<SemanticVersion>;
 //!
 //! impl DependencyProvider for MyDependencyProvider {
-//!     fn choose_version(&self, package: &String, range: &SemVS) -> Result<Option<SemanticVersion>, Infallible> {
+//!     fn choose_version(&mut self, package: &String, range: &SemVS) -> Result<Option<SemanticVersion>, Infallible> {
 //!         unimplemented!()
 //!     }
 //!
 //!     type Priority = usize;
-//!     fn prioritize(&self, package: &String, range: &SemVS) -> Self::Priority {
+//!     fn prioritize(&mut self, package: &String, range: &SemVS) -> Self::Priority {
 //!         unimplemented!()
 //!     }
 //!
 //!     fn get_dependencies(
-//!         &self,
+//!         &mut self,
 //!         package: &String,
 //!         version: &SemanticVersion,
 //!     ) -> Result<Dependencies<String, SemVS, Self::M>, Infallible> {
@@ -176,11 +176,11 @@
 //! #
 //! # type NumVS = Range<u32>;
 //! #
-//! # let dependency_provider = OfflineDependencyProvider::<&str, NumVS>::new();
+//! # let mut dependency_provider = OfflineDependencyProvider::<&str, NumVS>::new();
 //! # let root_package = "root";
 //! # let root_version = 1u32;
 //! #
-//! match resolve(&dependency_provider, root_package, root_version) {
+//! match resolve(&mut dependency_provider, root_package, root_version) {
 //!     Ok(solution) => println!("{:?}", solution),
 //!     Err(PubGrubError::NoSolution(mut derivation_tree)) => {
 //!         derivation_tree.collapse_no_versions();

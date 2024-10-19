@@ -40,10 +40,10 @@
 //! # type NumVS = Range<u32>;
 //! #
 //! # fn try_main() -> Result<(), PubGrubError<OfflineDependencyProvider<&'static str, NumVS>>> {
-//! #     let dependency_provider = OfflineDependencyProvider::<&str, NumVS>::new();
+//! #     let mut dependency_provider = OfflineDependencyProvider::<&str, NumVS>::new();
 //! #     let package = "root";
 //! #     let version = 1u32;
-//! let solution = resolve(&dependency_provider, package, version)?;
+//! let solution = resolve(&mut dependency_provider, package, version)?;
 //! #     Ok(())
 //! # }
 //! # fn main() {
@@ -73,7 +73,7 @@ use crate::{DependencyConstraints, Map, Package, PubGrubError, SelectedDependenc
 /// Main function of the library.
 /// Finds a set of packages satisfying dependency bounds for a given package + version pair.
 pub fn resolve<DP: DependencyProvider>(
-    dependency_provider: &DP,
+    dependency_provider: &mut DP,
     package: DP::P,
     version: impl Into<DP::V>,
 ) -> Result<SelectedDependencies<DP>, PubGrubError<DP>> {
@@ -240,7 +240,7 @@ pub trait DependencyProvider {
     ///
     /// Note: the resolver may call this even when the range has not changed,
     /// if it is more efficient for the resolvers internal data structures.
-    fn prioritize(&self, package: &Self::P, range: &Self::VS) -> Self::Priority;
+    fn prioritize(&mut self, package: &Self::P, range: &Self::VS) -> Self::Priority;
     /// The type returned from `prioritize`. The resolver does not care what type this is
     /// as long as it can pick a largest one and clone it.
     ///
@@ -257,7 +257,7 @@ pub trait DependencyProvider {
     /// packages, it needs to know what version of that package to use. The most common pattern
     /// is to select the largest version that the range contains.
     fn choose_version(
-        &self,
+        &mut self,
         package: &Self::P,
         range: &Self::VS,
     ) -> Result<Option<Self::V>, Self::Err>;
@@ -266,7 +266,7 @@ pub trait DependencyProvider {
     /// Return [Dependencies::Unavailable] if its dependencies are unavailable.
     #[allow(clippy::type_complexity)]
     fn get_dependencies(
-        &self,
+        &mut self,
         package: &Self::P,
         version: &Self::V,
     ) -> Result<Dependencies<Self::P, Self::VS, Self::M>, Self::Err>;
@@ -276,7 +276,7 @@ pub trait DependencyProvider {
     /// This is helpful if you want to add some form of early termination like a timeout,
     /// or you want to add some form of user feedback if things are taking a while.
     /// If not provided the resolver will run as long as needed.
-    fn should_cancel(&self) -> Result<(), Self::Err> {
+    fn should_cancel(&mut self) -> Result<(), Self::Err> {
         Ok(())
     }
 }
@@ -361,7 +361,7 @@ impl<P: Package, VS: VersionSet> DependencyProvider for OfflineDependencyProvide
 
     type Err = Infallible;
 
-    fn choose_version(&self, package: &P, range: &VS) -> Result<Option<VS::V>, Infallible> {
+    fn choose_version(&mut self, package: &P, range: &VS) -> Result<Option<VS::V>, Infallible> {
         Ok(self
             .dependencies
             .get(package)
@@ -369,7 +369,7 @@ impl<P: Package, VS: VersionSet> DependencyProvider for OfflineDependencyProvide
     }
 
     type Priority = Reverse<usize>;
-    fn prioritize(&self, package: &P, range: &VS) -> Self::Priority {
+    fn prioritize(&mut self, package: &P, range: &VS) -> Self::Priority {
         Reverse(
             self.dependencies
                 .get(package)
@@ -379,7 +379,7 @@ impl<P: Package, VS: VersionSet> DependencyProvider for OfflineDependencyProvide
     }
 
     fn get_dependencies(
-        &self,
+        &mut self,
         package: &P,
         version: &VS::V,
     ) -> Result<Dependencies<P, VS, Self::M>, Infallible> {

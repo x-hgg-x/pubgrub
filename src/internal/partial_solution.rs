@@ -257,7 +257,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
 
     pub(crate) fn pick_highest_priority_pkg(
         &mut self,
-        prioritizer: impl Fn(&DP::P, &DP::VS) -> DP::Priority,
+        mut prioritizer: impl FnMut(&DP::P, &DP::VS) -> DP::Priority,
     ) -> Option<DP::P> {
         let check_all = self.changed_this_decision_level
             == self.current_decision_level.0.saturating_sub(1) as usize;

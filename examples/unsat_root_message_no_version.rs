@@ -217,7 +217,7 @@ fn main() {
     );
 
     // Run the algorithm
-    match resolve(&dependency_provider, Package::Root, (0, 0, 0)) {
+    match resolve(&mut dependency_provider, Package::Root, (0, 0, 0)) {
         Ok(sol) => println!("{:?}", sol),
         Err(PubGrubError::NoSolution(derivation_tree)) => {
             eprintln!("No solution.\n");

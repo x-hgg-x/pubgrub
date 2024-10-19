@@ -25,7 +25,7 @@ impl<DP: DependencyProvider> CachingDependencyProvider<DP> {
 impl<DP: DependencyProvider<M = String>> DependencyProvider for CachingDependencyProvider<DP> {
     // Caches dependencies if they were already queried
     fn get_dependencies(
-        &self,
+        &mut self,
         package: &DP::P,
         version: &DP::V,
     ) -> Result<Dependencies<DP::P, DP::VS, DP::M>, DP::Err> {
@@ -51,13 +51,17 @@ impl<DP: DependencyProvider<M = String>> DependencyProvider for CachingDependenc
         }
     }
 
-    fn choose_version(&self, package: &DP::P, range: &DP::VS) -> Result<Option<DP::V>, DP::Err> {
+    fn choose_version(
+        &mut self,
+        package: &DP::P,
+        range: &DP::VS,
+    ) -> Result<Option<DP::V>, DP::Err> {
         self.remote_dependencies.choose_version(package, range)
     }
 
     type Priority = DP::Priority;
 
-    fn prioritize(&self, package: &DP::P, range: &DP::VS) -> Self::Priority {
+    fn prioritize(&mut self, package: &DP::P, range: &DP::VS) -> Self::Priority {
         self.remote_dependencies.prioritize(package, range)
     }
 
@@ -76,9 +80,9 @@ fn main() {
     // Add dependencies as needed. Here only root package is added.
     remote_dependencies_provider.add_dependencies("root", 1u32, Vec::new());
 
-    let caching_dependencies_provider =
+    let mut caching_dependencies_provider =
         CachingDependencyProvider::new(remote_dependencies_provider);
 
-    let solution = resolve(&caching_dependencies_provider, "root", 1u32);
+    let solution = resolve(&mut caching_dependencies_provider, "root", 1u32);
     println!("Solution: {:?}", solution);
 }

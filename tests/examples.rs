@@ -39,7 +39,7 @@ fn no_conflict() {
     dependency_provider.add_dependencies("bar", (2, 0, 0), []);
 
     // Run the algorithm.
-    let computed_solution = resolve(&dependency_provider, "root", (1, 0, 0)).unwrap();
+    let computed_solution = resolve(&mut dependency_provider, "root", (1, 0, 0)).unwrap();
 
     // Solution.
     let mut expected_solution = Map::default();
@@ -75,7 +75,7 @@ fn avoiding_conflict_during_decision_making() {
     dependency_provider.add_dependencies("bar", (2, 0, 0), []);
 
     // Run the algorithm.
-    let computed_solution = resolve(&dependency_provider, "root", (1, 0, 0)).unwrap();
+    let computed_solution = resolve(&mut dependency_provider, "root", (1, 0, 0)).unwrap();
 
     // Solution.
     let mut expected_solution = Map::default();
@@ -110,7 +110,7 @@ fn conflict_resolution() {
     );
 
     // Run the algorithm.
-    let computed_solution = resolve(&dependency_provider, "root", (1, 0, 0)).unwrap();
+    let computed_solution = resolve(&mut dependency_provider, "root", (1, 0, 0)).unwrap();
 
     // Solution.
     let mut expected_solution = Map::default();
@@ -168,7 +168,7 @@ fn conflict_with_partial_satisfier() {
     dependency_provider.add_dependencies("target", (1, 0, 0), []);
 
     // Run the algorithm.
-    let computed_solution = resolve(&dependency_provider, "root", (1, 0, 0)).unwrap();
+    let computed_solution = resolve(&mut dependency_provider, "root", (1, 0, 0)).unwrap();
 
     // Solution.
     let mut expected_solution = Map::default();
@@ -207,7 +207,7 @@ fn double_choices() {
     expected_solution.insert("d", 0u32);
 
     // Run the algorithm.
-    let computed_solution = resolve(&dependency_provider, "a", 0u32).unwrap();
+    let computed_solution = resolve(&mut dependency_provider, "a", 0u32).unwrap();
     assert_eq!(expected_solution, computed_solution);
 }
 
@@ -231,7 +231,7 @@ fn confusing_with_lots_of_holes() {
     dependency_provider.add_dependencies("baz", 1u32, vec![]);
 
     let Err(PubGrubError::NoSolution(mut derivation_tree)) =
-        resolve(&dependency_provider, "root", 1u32)
+        resolve(&mut dependency_provider, "root", 1u32)
     else {
         unreachable!()
     };

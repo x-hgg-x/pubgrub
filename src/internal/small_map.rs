@@ -105,9 +105,12 @@ impl<K: PartialEq + Eq + Hash, V> SmallMap<K, V> {
     ///
     /// This is an optimization over the following, where we only need a reference to `t1`. It
     /// avoids cloning and then drop the ranges in each `prior_cause` call.
-    /// ```ignore
+    /// ```
+    /// # use pubgrub::Map;
+    /// # let package_terms = Map::from_iter([(1, 1)]);
+    /// # let package = 1;
     /// let mut package_terms = package_terms.clone();
-    //  let t1 = package_terms.remove(package).unwrap();
+    /// let t1 = package_terms.remove(&package).unwrap();
     /// ```
     pub(crate) fn split_one(&self, key: &K) -> Option<(&V, Self)>
     where

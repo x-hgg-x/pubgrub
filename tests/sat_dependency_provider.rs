@@ -41,7 +41,7 @@ pub struct SatResolve<P: Package, VS: VersionSet> {
 }
 
 impl<P: Package, VS: VersionSet> SatResolve<P, VS> {
-    pub fn new(dp: &OfflineDependencyProvider<P, VS>) -> Self {
+    pub fn new(dp: &mut OfflineDependencyProvider<P, VS>) -> Self {
         let mut cnf = varisat::CnfFormula::new();
 
         let mut all_versions = vec![];

@@ -19,6 +19,6 @@ fn main() {
     dependency_provider.add_dependencies("icons", 1u32, []);
 
     // Run the algorithm.
-    let solution = resolve(&dependency_provider, "root", 1u32);
+    let solution = resolve(&mut dependency_provider, "root", 1u32);
     println!("Solution: {:?}", solution);
 }
