@@ -17,9 +17,9 @@ fn same_result_on_repeated_runs() {
 
     let name = "a";
     let ver: u32 = 0;
-    let one = resolve(&mut dependency_provider, name, ver);
+    let one = resolve(&mut dependency_provider, &name, ver);
     for _ in 0..10 {
-        match (&one, &resolve(&mut dependency_provider, name, ver)) {
+        match (&one, &resolve(&mut dependency_provider, &name, ver)) {
             (Ok(l), Ok(r)) => assert_eq!(l, r),
             _ => panic!("not the same result"),
         }
@@ -31,13 +31,13 @@ fn should_always_find_a_satisfier() {
     let mut dependency_provider = OfflineDependencyProvider::<_, NumVS>::new();
     dependency_provider.add_dependencies("a", 0u32, [("b", Range::empty())]);
     assert!(matches!(
-        resolve(&mut dependency_provider, "a", 0u32),
+        resolve(&mut dependency_provider, &"a", 0u32),
         Err(PubGrubError::NoSolution { .. })
     ));
 
     dependency_provider.add_dependencies("c", 0u32, [("a", Range::full())]);
     assert!(matches!(
-        resolve(&mut dependency_provider, "c", 0u32),
+        resolve(&mut dependency_provider, &"c", 0u32),
         Err(PubGrubError::NoSolution { .. })
     ));
 }
@@ -46,7 +46,7 @@ fn should_always_find_a_satisfier() {
 fn depend_on_self() {
     let mut dependency_provider = OfflineDependencyProvider::<_, NumVS>::new();
     dependency_provider.add_dependencies("a", 0u32, [("a", Range::full())]);
-    assert!(resolve(&mut dependency_provider, "a", 0u32).is_ok());
+    assert!(resolve(&mut dependency_provider, &"a", 0u32).is_ok());
     dependency_provider.add_dependencies("a", 66u32, [("a", Range::singleton(111u32))]);
-    assert!(resolve(&mut dependency_provider, "a", 66u32).is_err());
+    assert!(resolve(&mut dependency_provider, &"a", 66u32).is_err());
 }

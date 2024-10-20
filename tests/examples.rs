@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use pubgrub::{
-    resolve, DefaultStringReporter, Map, OfflineDependencyProvider, PubGrubError, Range,
-    Reporter as _, SemanticVersion, Set,
+    resolve, DefaultStringReporter, DependencyProvider, Map, OfflineDependencyProvider,
+    PubGrubError, Range, Reporter as _, SemanticVersion, Set,
 };
 
 type NumVS = Range<u32>;
@@ -39,7 +39,7 @@ fn no_conflict() {
     dependency_provider.add_dependencies("bar", (2, 0, 0), []);
 
     // Run the algorithm.
-    let computed_solution = resolve(&mut dependency_provider, "root", (1, 0, 0)).unwrap();
+    let computed_solution = resolve(&mut dependency_provider, &"root", (1, 0, 0)).unwrap();
 
     // Solution.
     let mut expected_solution = Map::default();
@@ -75,7 +75,7 @@ fn avoiding_conflict_during_decision_making() {
     dependency_provider.add_dependencies("bar", (2, 0, 0), []);
 
     // Run the algorithm.
-    let computed_solution = resolve(&mut dependency_provider, "root", (1, 0, 0)).unwrap();
+    let computed_solution = resolve(&mut dependency_provider, &"root", (1, 0, 0)).unwrap();
 
     // Solution.
     let mut expected_solution = Map::default();
@@ -110,7 +110,7 @@ fn conflict_resolution() {
     );
 
     // Run the algorithm.
-    let computed_solution = resolve(&mut dependency_provider, "root", (1, 0, 0)).unwrap();
+    let computed_solution = resolve(&mut dependency_provider, &"root", (1, 0, 0)).unwrap();
 
     // Solution.
     let mut expected_solution = Map::default();
@@ -168,7 +168,7 @@ fn conflict_with_partial_satisfier() {
     dependency_provider.add_dependencies("target", (1, 0, 0), []);
 
     // Run the algorithm.
-    let computed_solution = resolve(&mut dependency_provider, "root", (1, 0, 0)).unwrap();
+    let computed_solution = resolve(&mut dependency_provider, &"root", (1, 0, 0)).unwrap();
 
     // Solution.
     let mut expected_solution = Map::default();
@@ -207,7 +207,7 @@ fn double_choices() {
     expected_solution.insert("d", 0u32);
 
     // Run the algorithm.
-    let computed_solution = resolve(&mut dependency_provider, "a", 0u32).unwrap();
+    let computed_solution = resolve(&mut dependency_provider, &"a", 0u32).unwrap();
     assert_eq!(expected_solution, computed_solution);
 }
 
@@ -231,23 +231,27 @@ fn confusing_with_lots_of_holes() {
     dependency_provider.add_dependencies("baz", 1u32, vec![]);
 
     let Err(PubGrubError::NoSolution(mut derivation_tree)) =
-        resolve(&mut dependency_provider, "root", 1u32)
+        resolve(&mut dependency_provider, &"root", 1u32)
     else {
         unreachable!()
     };
     assert_eq!(
-        &DefaultStringReporter::report(&derivation_tree),
+        &DefaultStringReporter::report(&derivation_tree, &dependency_provider),
         r#"Because there is no available version for bar and foo 1 | 2 | 3 | 4 | 5 depends on bar, foo 1 | 2 | 3 | 4 | 5 is forbidden.
 And because there is no version of foo in <1 | >1, <2 | >2, <3 | >3, <4 | >4, <5 | >5 and root 1 depends on foo, root 1 is forbidden."#
     );
     derivation_tree.collapse_no_versions();
     assert_eq!(
-        &DefaultStringReporter::report(&derivation_tree),
+        &DefaultStringReporter::report(&derivation_tree, &dependency_provider),
         "Because foo depends on bar and root 1 depends on foo, root 1 is forbidden."
     );
     assert_eq!(
         derivation_tree.packages(),
         // baz isn't shown.
-        Set::from_iter(&["root", "foo", "bar"])
+        Set::from_iter([
+            dependency_provider.name_to_package(&"root").unwrap(),
+            dependency_provider.name_to_package(&"foo").unwrap(),
+            dependency_provider.name_to_package(&"bar").unwrap(),
+        ])
     );
 }

@@ -1,19 +1,29 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use std::cell::RefCell;
+use std::fmt::{Debug, Display};
+use std::hash::Hash;
 
-use pubgrub::{resolve, Dependencies, DependencyProvider, OfflineDependencyProvider, Range};
+use pubgrub::{
+    resolve, Dependencies, DependencyProvider, Map, OfflineDependencyProvider, Package, Range,
+};
 
 type NumVS = Range<u32>;
 
 // An example implementing caching dependency provider that will
 // store queried dependencies in memory and check them before querying more from remote.
-struct CachingDependencyProvider<DP: DependencyProvider> {
+struct CachingDependencyProvider<DP: DependencyProvider>
+where
+    DP::P: Debug + Display + Clone + Eq + Hash,
+{
     remote_dependencies: DP,
     cached_dependencies: RefCell<OfflineDependencyProvider<DP::P, DP::VS>>,
 }
 
-impl<DP: DependencyProvider> CachingDependencyProvider<DP> {
+impl<DP: DependencyProvider> CachingDependencyProvider<DP>
+where
+    DP::P: Debug + Display + Clone + Eq + Hash,
+{
     pub fn new(remote_dependencies_provider: DP) -> Self {
         CachingDependencyProvider {
             remote_dependencies: remote_dependencies_provider,
@@ -22,13 +32,16 @@ impl<DP: DependencyProvider> CachingDependencyProvider<DP> {
     }
 }
 
-impl<DP: DependencyProvider<M = String>> DependencyProvider for CachingDependencyProvider<DP> {
+impl<DP: DependencyProvider<M = String>> DependencyProvider for CachingDependencyProvider<DP>
+where
+    DP::P: Debug + Display + Clone + Eq + Hash,
+{
     // Caches dependencies if they were already queried
     fn get_dependencies(
         &mut self,
-        package: &DP::P,
+        package: Package,
         version: &DP::V,
-    ) -> Result<Dependencies<DP::P, DP::VS, DP::M>, DP::Err> {
+    ) -> Result<Dependencies<DP::VS, DP::M>, DP::Err> {
         let mut cache = self.cached_dependencies.borrow_mut();
         match cache.get_dependencies(package, version) {
             Ok(Dependencies::Unavailable(_)) => {
@@ -36,9 +49,23 @@ impl<DP: DependencyProvider<M = String>> DependencyProvider for CachingDependenc
                 match dependencies {
                     Ok(Dependencies::Available(dependencies)) => {
                         cache.add_dependencies(
-                            package.clone(),
+                            self.remote_dependencies
+                                .package_to_name(package)
+                                .unwrap()
+                                .clone(),
                             version.clone(),
-                            dependencies.clone(),
+                            dependencies
+                                .iter()
+                                .map(|(&p, vs)| {
+                                    (
+                                        self.remote_dependencies
+                                            .package_to_name(p)
+                                            .unwrap()
+                                            .clone(),
+                                        vs.clone(),
+                                    )
+                                })
+                                .collect::<Map<_, _>>(),
                         );
                         Ok(Dependencies::Available(dependencies))
                     }
@@ -53,7 +80,7 @@ impl<DP: DependencyProvider<M = String>> DependencyProvider for CachingDependenc
 
     fn choose_version(
         &mut self,
-        package: &DP::P,
+        package: Package,
         range: &DP::VS,
     ) -> Result<Option<DP::V>, DP::Err> {
         self.remote_dependencies.choose_version(package, range)
@@ -61,7 +88,7 @@ impl<DP: DependencyProvider<M = String>> DependencyProvider for CachingDependenc
 
     type Priority = DP::Priority;
 
-    fn prioritize(&mut self, package: &DP::P, range: &DP::VS) -> Self::Priority {
+    fn prioritize(&mut self, package: Package, range: &DP::VS) -> Self::Priority {
         self.remote_dependencies.prioritize(package, range)
     }
 
@@ -71,6 +98,14 @@ impl<DP: DependencyProvider<M = String>> DependencyProvider for CachingDependenc
     type V = DP::V;
     type VS = DP::VS;
     type M = DP::M;
+
+    fn package_to_name(&self, package: Package) -> Option<&Self::P> {
+        self.remote_dependencies.package_to_name(package)
+    }
+
+    fn name_to_package(&self, package_name: &Self::P) -> Option<Package> {
+        self.remote_dependencies.name_to_package(package_name)
+    }
 }
 
 fn main() {
@@ -83,6 +118,6 @@ fn main() {
     let mut caching_dependencies_provider =
         CachingDependencyProvider::new(remote_dependencies_provider);
 
-    let solution = resolve(&mut caching_dependencies_provider, "root", 1u32);
+    let solution = resolve(&mut caching_dependencies_provider, &"root", 1u32);
     println!("Solution: {:?}", solution);
 }

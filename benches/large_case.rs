@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
-use std::collections::HashMap;
+use std::fmt::{Debug, Display};
+use std::hash::Hash;
 use std::time::Duration;
 
 use criterion::*;
 use serde::de::Deserialize;
 
-use pubgrub::{resolve, OfflineDependencyProvider, Package, Range, SemanticVersion, VersionSet};
+use pubgrub::{resolve, Map, OfflineDependencyProvider, Range, SemanticVersion, VersionSet};
 
-fn bench<'a, P: Package + Deserialize<'a>, VS: VersionSet + Deserialize<'a>>(
+fn bench<
+    'a,
+    P: Debug + Display + Clone + Eq + Hash + Deserialize<'a>,
+    VS: VersionSet + Deserialize<'a>,
+>(
     b: &mut Bencher,
     case: &'a str,
 ) where
@@ -24,12 +29,12 @@ fn bench<'a, P: Package + Deserialize<'a>, VS: VersionSet + Deserialize<'a>>(
                 dependency_provider.versions(p).unwrap().cloned().collect(),
             )
         })
-        .collect::<HashMap<_, Vec<_>>>();
+        .collect::<Map<_, Vec<_>>>();
 
     b.iter(|| {
         for (p, versions) in &dependencies {
             for n in versions {
-                let _ = resolve(&mut dependency_provider, p.clone(), n.clone());
+                let _ = resolve(&mut dependency_provider, p, n.clone());
             }
         }
     });

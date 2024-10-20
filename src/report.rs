@@ -7,54 +7,55 @@ use std::fmt::{self, Debug, Display};
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::{Map, Package, Set, Term, VersionSet};
+use crate::{DependencyProvider, Map, Package, Set, Term, VersionSet};
 
 /// Reporter trait.
-pub trait Reporter<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
+pub trait Reporter<DP: DependencyProvider, VS: VersionSet, M: Clone + Debug + Display> {
     /// Output type of the report.
     type Output;
 
     /// Generate a report from the derivation tree
     /// describing the resolution failure using the default formatter.
-    fn report(derivation_tree: &DerivationTree<P, VS, M>) -> Self::Output;
+    fn report(derivation_tree: &DerivationTree<VS, M>, dependency_provider: &DP) -> Self::Output;
 
     /// Generate a report from the derivation tree
     /// describing the resolution failure using a custom formatter.
     fn report_with_formatter(
-        derivation_tree: &DerivationTree<P, VS, M>,
-        formatter: &impl ReportFormatter<P, VS, M, Output = Self::Output>,
+        derivation_tree: &DerivationTree<VS, M>,
+        formatter: &impl ReportFormatter<DP, VS, M, Output = Self::Output>,
+        dependency_provider: &DP,
     ) -> Self::Output;
 }
 
 /// Derivation tree resulting in the impossibility
 /// to solve the dependencies of our root package.
 #[derive(Debug, Clone)]
-pub enum DerivationTree<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
+pub enum DerivationTree<VS: VersionSet, M: Clone + Debug + Display> {
     /// External incompatibility.
-    External(External<P, VS, M>),
+    External(External<VS, M>),
     /// Incompatibility derived from two others.
-    Derived(Derived<P, VS, M>),
+    Derived(Derived<VS, M>),
 }
 
 /// Incompatibilities that are not derived from others,
 /// they have their own reason.
 #[derive(Debug, Clone)]
-pub enum External<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
+pub enum External<VS: VersionSet, M: Clone + Debug + Display> {
     /// Initial incompatibility aiming at picking the root package for the first decision.
-    NotRoot(P, VS::V),
+    NotRoot(Package, VS::V),
     /// There are no versions in the given set for this package.
-    NoVersions(P, VS),
+    NoVersions(Package, VS),
     /// Incompatibility coming from the dependencies of a given package.
-    FromDependencyOf(P, VS, P, VS),
+    FromDependencyOf(Package, VS, Package, VS),
     /// The package is unusable for reasons outside pubgrub.
-    Custom(P, VS, M),
+    Custom(Package, VS, M),
 }
 
 /// Incompatibility derived from two others.
 #[derive(Debug, Clone)]
-pub struct Derived<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
+pub struct Derived<VS: VersionSet, M: Clone + Debug + Display> {
     /// Terms of the incompatibility.
-    pub terms: Map<P, Term<VS>>,
+    pub terms: Map<Package, Term<VS>>,
     /// Indicate if that incompatibility is present multiple times
     /// in the derivation tree.
     /// If that is the case, it has a unique id, provided in that option.
@@ -62,17 +63,17 @@ pub struct Derived<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
     /// and refer to the explanation for the other times.
     pub shared_id: Option<usize>,
     /// First cause.
-    pub cause1: Arc<DerivationTree<P, VS, M>>,
+    pub cause1: Arc<DerivationTree<VS, M>>,
     /// Second cause.
-    pub cause2: Arc<DerivationTree<P, VS, M>>,
+    pub cause2: Arc<DerivationTree<VS, M>>,
 }
 
-impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> DerivationTree<P, VS, M> {
+impl<VS: VersionSet, M: Clone + Debug + Display> DerivationTree<VS, M> {
     /// Get all packages referred to in the derivation tree.
-    pub fn packages(&self) -> Set<&P> {
+    pub fn packages(&self) -> Set<Package> {
         let mut packages = Set::default();
         match self {
-            Self::External(external) => match external {
+            Self::External(external) => match *external {
                 External::FromDependencyOf(p, _, p2, _) => {
                     packages.insert(p);
                     packages.insert(p2);
@@ -110,14 +111,14 @@ impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> DerivationTree<P, V
                     Arc::make_mut(&mut derived.cause1),
                     Arc::make_mut(&mut derived.cause2),
                 ) {
-                    (DerivationTree::External(External::NoVersions(p, r)), ref mut cause2) => {
+                    (DerivationTree::External(External::NoVersions(p, r)), cause2) => {
                         cause2.collapse_no_versions();
                         *self = cause2
                             .clone()
                             .merge_no_versions(p.to_owned(), r.to_owned())
                             .unwrap_or_else(|| self.to_owned());
                     }
-                    (ref mut cause1, DerivationTree::External(External::NoVersions(p, r))) => {
+                    (cause1, DerivationTree::External(External::NoVersions(p, r))) => {
                         cause1.collapse_no_versions();
                         *self = cause1
                             .clone()
@@ -133,7 +134,7 @@ impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> DerivationTree<P, V
         }
     }
 
-    fn merge_no_versions(self, package: P, set: VS) -> Option<Self> {
+    fn merge_no_versions(self, package: Package, set: VS) -> Option<Self> {
         match self {
             // TODO: take care of the Derived case.
             // Once done, we can remove the Option.
@@ -167,43 +168,104 @@ impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> DerivationTree<P, V
     }
 }
 
-impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> Display for External<P, VS, M> {
+impl<VS: VersionSet, M: Clone + Debug + Display> External<VS, M> {
+    /// Returns an object implementing `Display` for this `External`.
+    pub fn display<'a, DP: DependencyProvider>(
+        &'a self,
+        dependency_provider: &'a DP,
+    ) -> ExternalDisplay<'a, DP, VS, M> {
+        ExternalDisplay {
+            external: self,
+            dependency_provider,
+        }
+    }
+}
+
+pub struct ExternalDisplay<'a, DP: DependencyProvider, VS: VersionSet, M: Clone + Debug + Display> {
+    external: &'a External<VS, M>,
+    dependency_provider: &'a DP,
+}
+
+impl<'a, DP: DependencyProvider, VS: VersionSet, M: Clone + Debug + Display> Display
+    for ExternalDisplay<'a, DP, VS, M>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotRoot(package, version) => {
-                write!(f, "we are solving dependencies of {} {}", package, version)
+        match *self.external {
+            External::NotRoot(package, ref version) => {
+                write!(
+                    f,
+                    "we are solving dependencies of {} {}",
+                    self.dependency_provider.package_to_name(package).unwrap(),
+                    version
+                )
             }
-            Self::NoVersions(package, set) => {
+            External::NoVersions(package, ref set) => {
                 if set == &VS::full() {
-                    write!(f, "there is no available version for {}", package)
+                    write!(
+                        f,
+                        "there is no available version for {}",
+                        self.dependency_provider.package_to_name(package).unwrap()
+                    )
                 } else {
-                    write!(f, "there is no version of {} in {}", package, set)
+                    write!(
+                        f,
+                        "there is no version of {} in {}",
+                        self.dependency_provider.package_to_name(package).unwrap(),
+                        set
+                    )
                 }
             }
-            Self::Custom(package, set, metadata) => {
+            External::Custom(package, ref set, ref metadata) => {
                 if set == &VS::full() {
                     write!(
                         f,
                         "dependencies of {} are unavailable {}",
-                        package, metadata
+                        self.dependency_provider.package_to_name(package).unwrap(),
+                        metadata
                     )
                 } else {
                     write!(
                         f,
                         "dependencies of {} at version {} are unavailable {}",
-                        package, set, metadata
+                        self.dependency_provider.package_to_name(package).unwrap(),
+                        set,
+                        metadata
                     )
                 }
             }
-            Self::FromDependencyOf(p, set_p, dep, set_dep) => {
+            External::FromDependencyOf(p, ref set_p, dep, ref set_dep) => {
                 if set_p == &VS::full() && set_dep == &VS::full() {
-                    write!(f, "{} depends on {}", p, dep)
+                    write!(
+                        f,
+                        "{} depends on {}",
+                        self.dependency_provider.package_to_name(p).unwrap(),
+                        self.dependency_provider.package_to_name(dep).unwrap(),
+                    )
                 } else if set_p == &VS::full() {
-                    write!(f, "{} depends on {} {}", p, dep, set_dep)
+                    write!(
+                        f,
+                        "{} depends on {} {}",
+                        self.dependency_provider.package_to_name(p).unwrap(),
+                        self.dependency_provider.package_to_name(dep).unwrap(),
+                        set_dep
+                    )
                 } else if set_dep == &VS::full() {
-                    write!(f, "{} {} depends on {}", p, set_p, dep)
+                    write!(
+                        f,
+                        "{} {} depends on {}",
+                        self.dependency_provider.package_to_name(p).unwrap(),
+                        set_p,
+                        self.dependency_provider.package_to_name(dep).unwrap(),
+                    )
                 } else {
-                    write!(f, "{} {} depends on {} {}", p, set_p, dep, set_dep)
+                    write!(
+                        f,
+                        "{} {} depends on {} {}",
+                        self.dependency_provider.package_to_name(p).unwrap(),
+                        set_p,
+                        self.dependency_provider.package_to_name(dep).unwrap(),
+                        set_dep
+                    )
                 }
             }
         }
@@ -211,32 +273,39 @@ impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> Display for Externa
 }
 
 /// Trait for formatting outputs in the reporter.
-pub trait ReportFormatter<P: Package, VS: VersionSet, M: Clone + Debug + Display> {
+pub trait ReportFormatter<DP: DependencyProvider, VS: VersionSet, M: Clone + Debug + Display> {
     /// Output type of the report.
     type Output;
 
     /// Format an [External] incompatibility.
-    fn format_external(&self, external: &External<P, VS, M>) -> Self::Output;
+    fn format_external(&self, external: &External<VS, M>, dependency_provider: &DP)
+        -> Self::Output;
 
     /// Format terms of an incompatibility.
-    fn format_terms(&self, terms: &Map<P, Term<VS>>) -> Self::Output;
+    fn format_terms(
+        &self,
+        terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
+    ) -> Self::Output;
 
     /// Simplest case, we just combine two external incompatibilities.
     fn explain_both_external(
         &self,
-        external1: &External<P, VS, M>,
-        external2: &External<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        external1: &External<VS, M>,
+        external2: &External<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
     ) -> Self::Output;
 
     /// Both causes have already been explained so we use their refs.
     fn explain_both_ref(
         &self,
         ref_id1: usize,
-        derived1: &Derived<P, VS, M>,
+        derived1: &Derived<VS, M>,
         ref_id2: usize,
-        derived2: &Derived<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        derived2: &Derived<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
     ) -> Self::Output;
 
     /// One cause is derived (already explained so one-line),
@@ -245,32 +314,36 @@ pub trait ReportFormatter<P: Package, VS: VersionSet, M: Clone + Debug + Display
     fn explain_ref_and_external(
         &self,
         ref_id: usize,
-        derived: &Derived<P, VS, M>,
-        external: &External<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        derived: &Derived<VS, M>,
+        external: &External<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
     ) -> Self::Output;
 
     /// Add an external cause to the chain of explanations.
     fn and_explain_external(
         &self,
-        external: &External<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        external: &External<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
     ) -> Self::Output;
 
     /// Add an already explained incompat to the chain of explanations.
     fn and_explain_ref(
         &self,
         ref_id: usize,
-        derived: &Derived<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        derived: &Derived<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
     ) -> Self::Output;
 
     /// Add an already explained incompat to the chain of explanations.
     fn and_explain_prior_and_external(
         &self,
-        prior_external: &External<P, VS, M>,
-        external: &External<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        prior_external: &External<VS, M>,
+        external: &External<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
     ) -> Self::Output;
 }
 
@@ -278,30 +351,49 @@ pub trait ReportFormatter<P: Package, VS: VersionSet, M: Clone + Debug + Display
 #[derive(Default, Debug)]
 pub struct DefaultStringReportFormatter;
 
-impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> ReportFormatter<P, VS, M>
+impl<DP: DependencyProvider, VS: VersionSet, M: Clone + Debug + Display> ReportFormatter<DP, VS, M>
     for DefaultStringReportFormatter
 {
     type Output = String;
 
-    fn format_external(&self, external: &External<P, VS, M>) -> String {
-        external.to_string()
+    fn format_external(&self, external: &External<VS, M>, dependency_provider: &DP) -> String {
+        external.display(dependency_provider).to_string()
     }
 
-    fn format_terms(&self, terms: &Map<P, Term<VS>>) -> Self::Output {
-        let terms_vec: Vec<_> = terms.iter().collect();
-        match terms_vec.as_slice() {
+    fn format_terms(
+        &self,
+        terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
+    ) -> Self::Output {
+        let terms_vec: Vec<_> = terms.iter().map(|(&k, v)| (k, v)).collect();
+        match *terms_vec.as_slice() {
             [] => "version solving failed".into(),
             // TODO: special case when that unique package is root.
-            [(package, Term::Positive(range))] => format!("{} {} is forbidden", package, range),
-            [(package, Term::Negative(range))] => format!("{} {} is mandatory", package, range),
+            [(package, Term::Positive(range))] => format!(
+                "{} {} is forbidden",
+                dependency_provider.package_to_name(package).unwrap(),
+                range
+            ),
+            [(package, Term::Negative(range))] => format!(
+                "{} {} is mandatory",
+                dependency_provider.package_to_name(package).unwrap(),
+                range
+            ),
             [(p1, Term::Positive(r1)), (p2, Term::Negative(r2))] => self.format_external(
-                &External::<_, _, M>::FromDependencyOf(p1, r1.clone(), p2, r2.clone()),
+                &External::<_, M>::FromDependencyOf(p1, r1.clone(), p2, r2.clone()),
+                dependency_provider,
             ),
             [(p1, Term::Negative(r1)), (p2, Term::Positive(r2))] => self.format_external(
-                &External::<_, _, M>::FromDependencyOf(p2, r2.clone(), p1, r1.clone()),
+                &External::<_, M>::FromDependencyOf(p2, r2.clone(), p1, r1.clone()),
+                dependency_provider,
             ),
-            slice => {
-                let str_terms: Vec<_> = slice.iter().map(|(p, t)| format!("{} {}", p, t)).collect();
+            ref slice => {
+                let str_terms: Vec<_> = slice
+                    .iter()
+                    .map(|&(p, t)| {
+                        format!("{} {}", dependency_provider.package_to_name(p).unwrap(), t)
+                    })
+                    .collect();
                 str_terms.join(", ") + " are incompatible"
             }
         }
@@ -310,16 +402,17 @@ impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> ReportFormatter<P, 
     /// Simplest case, we just combine two external incompatibilities.
     fn explain_both_external(
         &self,
-        external1: &External<P, VS, M>,
-        external2: &External<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        external1: &External<VS, M>,
+        external2: &External<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
     ) -> String {
         // TODO: order should be chosen to make it more logical.
         format!(
             "Because {} and {}, {}.",
-            self.format_external(external1),
-            self.format_external(external2),
-            ReportFormatter::<P, VS, M>::format_terms(self, current_terms)
+            self.format_external(external1, dependency_provider),
+            self.format_external(external2, dependency_provider),
+            ReportFormatter::<DP, VS, M>::format_terms(self, current_terms, dependency_provider)
         )
     }
 
@@ -327,19 +420,20 @@ impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> ReportFormatter<P, 
     fn explain_both_ref(
         &self,
         ref_id1: usize,
-        derived1: &Derived<P, VS, M>,
+        derived1: &Derived<VS, M>,
         ref_id2: usize,
-        derived2: &Derived<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        derived2: &Derived<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
     ) -> String {
         // TODO: order should be chosen to make it more logical.
         format!(
             "Because {} ({}) and {} ({}), {}.",
-            ReportFormatter::<P, VS, M>::format_terms(self, &derived1.terms),
+            ReportFormatter::<DP, VS, M>::format_terms(self, &derived1.terms, dependency_provider),
             ref_id1,
-            ReportFormatter::<P, VS, M>::format_terms(self, &derived2.terms),
+            ReportFormatter::<DP, VS, M>::format_terms(self, &derived2.terms, dependency_provider),
             ref_id2,
-            ReportFormatter::<P, VS, M>::format_terms(self, current_terms)
+            ReportFormatter::<DP, VS, M>::format_terms(self, current_terms, dependency_provider)
         )
     }
 
@@ -349,30 +443,32 @@ impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> ReportFormatter<P, 
     fn explain_ref_and_external(
         &self,
         ref_id: usize,
-        derived: &Derived<P, VS, M>,
-        external: &External<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        derived: &Derived<VS, M>,
+        external: &External<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
     ) -> String {
         // TODO: order should be chosen to make it more logical.
         format!(
             "Because {} ({}) and {}, {}.",
-            ReportFormatter::<P, VS, M>::format_terms(self, &derived.terms),
+            ReportFormatter::<DP, VS, M>::format_terms(self, &derived.terms, dependency_provider),
             ref_id,
-            self.format_external(external),
-            ReportFormatter::<P, VS, M>::format_terms(self, current_terms)
+            self.format_external(external, dependency_provider),
+            ReportFormatter::<DP, VS, M>::format_terms(self, current_terms, dependency_provider)
         )
     }
 
     /// Add an external cause to the chain of explanations.
     fn and_explain_external(
         &self,
-        external: &External<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        external: &External<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
     ) -> String {
         format!(
             "And because {}, {}.",
-            self.format_external(external),
-            ReportFormatter::<P, VS, M>::format_terms(self, current_terms)
+            self.format_external(external, dependency_provider),
+            ReportFormatter::<DP, VS, M>::format_terms(self, current_terms, dependency_provider)
         )
     }
 
@@ -380,29 +476,31 @@ impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> ReportFormatter<P, 
     fn and_explain_ref(
         &self,
         ref_id: usize,
-        derived: &Derived<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        derived: &Derived<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
     ) -> String {
         format!(
             "And because {} ({}), {}.",
-            ReportFormatter::<P, VS, M>::format_terms(self, &derived.terms),
+            ReportFormatter::<DP, VS, M>::format_terms(self, &derived.terms, dependency_provider),
             ref_id,
-            ReportFormatter::<P, VS, M>::format_terms(self, current_terms)
+            ReportFormatter::<DP, VS, M>::format_terms(self, current_terms, dependency_provider)
         )
     }
 
     /// Add an already explained incompat to the chain of explanations.
     fn and_explain_prior_and_external(
         &self,
-        prior_external: &External<P, VS, M>,
-        external: &External<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        prior_external: &External<VS, M>,
+        external: &External<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
+        dependency_provider: &DP,
     ) -> String {
         format!(
             "And because {} and {}, {}.",
-            self.format_external(prior_external),
-            self.format_external(external),
-            ReportFormatter::<P, VS, M>::format_terms(self, current_terms)
+            self.format_external(prior_external, dependency_provider),
+            self.format_external(external, dependency_provider),
+            ReportFormatter::<DP, VS, M>::format_terms(self, current_terms, dependency_provider)
         )
     }
 }
@@ -429,16 +527,17 @@ impl DefaultStringReporter {
     }
 
     fn build_recursive<
-        P: Package,
+        DP: DependencyProvider,
         VS: VersionSet,
         M: Clone + Debug + Display,
-        F: ReportFormatter<P, VS, M, Output = String>,
+        F: ReportFormatter<DP, VS, M, Output = String>,
     >(
         &mut self,
-        derived: &Derived<P, VS, M>,
+        derived: &Derived<VS, M>,
         formatter: &F,
+        dependency_provider: &DP,
     ) {
-        self.build_recursive_helper(derived, formatter);
+        self.build_recursive_helper(derived, formatter, dependency_provider);
         if let Some(id) = derived.shared_id {
             #[allow(clippy::map_entry)] // `add_line_ref` not compatible with proposed fix.
             if !self.shared_with_ref.contains_key(&id) {
@@ -449,14 +548,15 @@ impl DefaultStringReporter {
     }
 
     fn build_recursive_helper<
-        P: Package,
+        DP: DependencyProvider,
         VS: VersionSet,
         M: Clone + Debug + Display,
-        F: ReportFormatter<P, VS, M, Output = String>,
+        F: ReportFormatter<DP, VS, M, Output = String>,
     >(
         &mut self,
-        current: &Derived<P, VS, M>,
+        current: &Derived<VS, M>,
         formatter: &F,
+        dependency_provider: &DP,
     ) {
         match (current.cause1.deref(), current.cause2.deref()) {
             (DerivationTree::External(external1), DerivationTree::External(external2)) => {
@@ -465,16 +565,29 @@ impl DefaultStringReporter {
                     external1,
                     external2,
                     &current.terms,
+                    dependency_provider,
                 ));
             }
             (DerivationTree::Derived(derived), DerivationTree::External(external)) => {
                 // One cause is derived, so we explain this first
                 // then we add the one-line external part
                 // and finally conclude with the current incompatibility.
-                self.report_one_each(derived, external, &current.terms, formatter);
+                self.report_one_each(
+                    derived,
+                    external,
+                    &current.terms,
+                    formatter,
+                    dependency_provider,
+                );
             }
             (DerivationTree::External(external), DerivationTree::Derived(derived)) => {
-                self.report_one_each(derived, external, &current.terms, formatter);
+                self.report_one_each(
+                    derived,
+                    external,
+                    &current.terms,
+                    formatter,
+                    dependency_provider,
+                );
             }
             (DerivationTree::Derived(derived1), DerivationTree::Derived(derived2)) => {
                 // This is the most complex case since both causes are also derived.
@@ -490,19 +603,28 @@ impl DefaultStringReporter {
                         ref2,
                         derived2,
                         &current.terms,
+                        dependency_provider,
                     )),
                     // Otherwise, if one only has a line number reference,
                     // we recursively call the one without reference and then
                     // add the one with reference to conclude.
                     (Some(ref1), None) => {
-                        self.build_recursive(derived2, formatter);
-                        self.lines
-                            .push(formatter.and_explain_ref(ref1, derived1, &current.terms));
+                        self.build_recursive(derived2, formatter, dependency_provider);
+                        self.lines.push(formatter.and_explain_ref(
+                            ref1,
+                            derived1,
+                            &current.terms,
+                            dependency_provider,
+                        ));
                     }
                     (None, Some(ref2)) => {
-                        self.build_recursive(derived1, formatter);
-                        self.lines
-                            .push(formatter.and_explain_ref(ref2, derived2, &current.terms));
+                        self.build_recursive(derived1, formatter, dependency_provider);
+                        self.lines.push(formatter.and_explain_ref(
+                            ref2,
+                            derived2,
+                            &current.terms,
+                            dependency_provider,
+                        ));
                     }
                     // Finally, if no line reference exists yet,
                     // we call recursively the first one and then,
@@ -512,19 +634,20 @@ impl DefaultStringReporter {
                     //     recursively call on the second node,
                     //     and finally conclude.
                     (None, None) => {
-                        self.build_recursive(derived1, formatter);
+                        self.build_recursive(derived1, formatter, dependency_provider);
                         if derived1.shared_id.is_some() {
                             self.lines.push("".into());
-                            self.build_recursive(current, formatter);
+                            self.build_recursive(current, formatter, dependency_provider);
                         } else {
                             self.add_line_ref();
                             let ref1 = self.ref_count;
                             self.lines.push("".into());
-                            self.build_recursive(derived2, formatter);
+                            self.build_recursive(derived2, formatter, dependency_provider);
                             self.lines.push(formatter.and_explain_ref(
                                 ref1,
                                 derived1,
                                 &current.terms,
+                                dependency_provider,
                             ));
                         }
                     }
@@ -538,16 +661,17 @@ impl DefaultStringReporter {
     /// The result will depend on the fact that the derived incompatibility
     /// has already been explained or not.
     fn report_one_each<
-        P: Package,
+        DP: DependencyProvider,
         VS: VersionSet,
         M: Clone + Debug + Display,
-        F: ReportFormatter<P, VS, M, Output = String>,
+        F: ReportFormatter<DP, VS, M, Output = String>,
     >(
         &mut self,
-        derived: &Derived<P, VS, M>,
-        external: &External<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        derived: &Derived<VS, M>,
+        external: &External<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
         formatter: &F,
+        dependency_provider: &DP,
     ) {
         match self.line_ref_of(derived.shared_id) {
             Some(ref_id) => self.lines.push(formatter.explain_ref_and_external(
@@ -555,49 +679,62 @@ impl DefaultStringReporter {
                 derived,
                 external,
                 current_terms,
+                dependency_provider,
             )),
-            None => self.report_recurse_one_each(derived, external, current_terms, formatter),
+            None => self.report_recurse_one_each(
+                derived,
+                external,
+                current_terms,
+                formatter,
+                dependency_provider,
+            ),
         }
     }
 
     /// Report one derived (without a line ref yet) and one external.
     fn report_recurse_one_each<
-        P: Package,
+        DP: DependencyProvider,
         VS: VersionSet,
         M: Clone + Debug + Display,
-        F: ReportFormatter<P, VS, M, Output = String>,
+        F: ReportFormatter<DP, VS, M, Output = String>,
     >(
         &mut self,
-        derived: &Derived<P, VS, M>,
-        external: &External<P, VS, M>,
-        current_terms: &Map<P, Term<VS>>,
+        derived: &Derived<VS, M>,
+        external: &External<VS, M>,
+        current_terms: &Map<Package, Term<VS>>,
         formatter: &F,
+        dependency_provider: &DP,
     ) {
         match (derived.cause1.deref(), derived.cause2.deref()) {
             // If the derived cause has itself one external prior cause,
             // we can chain the external explanations.
             (DerivationTree::Derived(prior_derived), DerivationTree::External(prior_external)) => {
-                self.build_recursive(prior_derived, formatter);
+                self.build_recursive(prior_derived, formatter, dependency_provider);
                 self.lines.push(formatter.and_explain_prior_and_external(
                     prior_external,
                     external,
                     current_terms,
+                    dependency_provider,
                 ));
             }
             // If the derived cause has itself one external prior cause,
             // we can chain the external explanations.
             (DerivationTree::External(prior_external), DerivationTree::Derived(prior_derived)) => {
-                self.build_recursive(prior_derived, formatter);
+                self.build_recursive(prior_derived, formatter, dependency_provider);
                 self.lines.push(formatter.and_explain_prior_and_external(
                     prior_external,
                     external,
                     current_terms,
+                    dependency_provider,
                 ));
             }
             _ => {
-                self.build_recursive(derived, formatter);
-                self.lines
-                    .push(formatter.and_explain_external(external, current_terms));
+                self.build_recursive(derived, formatter, dependency_provider);
+                self.lines.push(formatter.and_explain_external(
+                    external,
+                    current_terms,
+                    dependency_provider,
+                ));
             }
         }
     }
@@ -617,32 +754,37 @@ impl DefaultStringReporter {
     }
 }
 
-impl<P: Package, VS: VersionSet, M: Clone + Debug + Display> Reporter<P, VS, M>
+impl<DP: DependencyProvider, VS: VersionSet, M: Clone + Debug + Display> Reporter<DP, VS, M>
     for DefaultStringReporter
 {
     type Output = String;
 
-    fn report(derivation_tree: &DerivationTree<P, VS, M>) -> Self::Output {
+    fn report(derivation_tree: &DerivationTree<VS, M>, dependency_provider: &DP) -> Self::Output {
         let formatter = DefaultStringReportFormatter;
         match derivation_tree {
-            DerivationTree::External(external) => formatter.format_external(external),
+            DerivationTree::External(external) => {
+                formatter.format_external(external, dependency_provider)
+            }
             DerivationTree::Derived(derived) => {
                 let mut reporter = Self::new();
-                reporter.build_recursive(derived, &formatter);
+                reporter.build_recursive(derived, &formatter, dependency_provider);
                 reporter.lines.join("\n")
             }
         }
     }
 
     fn report_with_formatter(
-        derivation_tree: &DerivationTree<P, VS, M>,
-        formatter: &impl ReportFormatter<P, VS, M, Output = Self::Output>,
+        derivation_tree: &DerivationTree<VS, M>,
+        formatter: &impl ReportFormatter<DP, VS, M, Output = Self::Output>,
+        dependency_provider: &DP,
     ) -> Self::Output {
         match derivation_tree {
-            DerivationTree::External(external) => formatter.format_external(external),
+            DerivationTree::External(external) => {
+                formatter.format_external(external, dependency_provider)
+            }
             DerivationTree::Derived(derived) => {
                 let mut reporter = Self::new();
-                reporter.build_recursive(derived, formatter);
+                reporter.build_recursive(derived, formatter, dependency_provider);
                 reporter.lines.join("\n")
             }
         }

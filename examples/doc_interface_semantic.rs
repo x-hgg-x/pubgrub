@@ -62,11 +62,11 @@ fn main() {
     dependency_provider.add_dependencies("icons", (2, 0, 0), []);
 
     // Run the algorithm.
-    match resolve(&mut dependency_provider, "root", (1, 0, 0)) {
+    match resolve(&mut dependency_provider, &"root", (1, 0, 0)) {
         Ok(sol) => println!("{:?}", sol),
         Err(PubGrubError::NoSolution(mut derivation_tree)) => {
             derivation_tree.collapse_no_versions();
-            eprintln!("{}", DefaultStringReporter::report(&derivation_tree));
+            eprintln!("{}", DefaultStringReporter::report(&derivation_tree, &dependency_provider));
         }
         Err(err) => panic!("{:?}", err),
     };
