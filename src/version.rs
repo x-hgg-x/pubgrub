@@ -1,222 +1,120 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Traits and implementations to create and compare versions.
+/// Type for identifying versions.
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[repr(transparent)]
+pub struct Version(u8);
 
-use std::fmt::{self, Debug, Display};
-use std::str::FromStr;
+impl Version {
+    /// Maximum possible version.
+    pub const MAX: u64 = (u64::BITS - 1) as u64;
 
-use thiserror::Error;
-
-/// Type for semantic versions: major.minor.patch.
-#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct SemanticVersion {
-    major: u32,
-    minor: u32,
-    patch: u32,
-}
-
-#[cfg(feature = "serde")]
-impl serde::Serialize for SemanticVersion {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&format!("{}", self))
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for SemanticVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        FromStr::from_str(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-// Constructors
-impl SemanticVersion {
-    /// Create a version with "major", "minor" and "patch" values.
-    /// `version = major.minor.patch`
-    pub fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self {
-            major,
-            minor,
-            patch,
+    /// Constructor for an empty set containing no version.
+    #[inline]
+    pub fn new(v: u8) -> Option<Self> {
+        if v < Self::MAX as u8 {
+            Some(Self(v))
+        } else {
+            None
         }
     }
 
-    /// Version 0.0.0.
-    pub fn zero() -> Self {
-        Self::new(0, 0, 0)
+    /// Get the inner version number.
+    #[inline]
+    pub fn get(self) -> u8 {
+        self.0
     }
 
-    /// Version 1.0.0.
-    pub fn one() -> Self {
-        Self::new(1, 0, 0)
-    }
-
-    /// Version 2.0.0.
-    pub fn two() -> Self {
-        Self::new(2, 0, 0)
+    pub(crate) fn display_simple(self) -> u8 {
+        self.0
     }
 }
 
-// Convert a tuple (major, minor, patch) into a version.
-impl From<(u32, u32, u32)> for SemanticVersion {
-    fn from(tuple: (u32, u32, u32)) -> Self {
-        let (major, minor, patch) = tuple;
-        Self::new(major, minor, patch)
-    }
-}
+/// Type for identifying a set of versions.
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash)]
+#[repr(transparent)]
+pub struct VersionSet(pub(crate) u64);
 
-// Convert a &(major, minor, patch) into a version.
-impl From<&(u32, u32, u32)> for SemanticVersion {
-    fn from(tuple: &(u32, u32, u32)) -> Self {
-        let (major, minor, patch) = *tuple;
-        Self::new(major, minor, patch)
-    }
-}
-
-// Convert an &version into a version.
-impl From<&SemanticVersion> for SemanticVersion {
-    fn from(v: &SemanticVersion) -> Self {
-        *v
-    }
-}
-
-// Convert a version into a tuple (major, minor, patch).
-impl From<SemanticVersion> for (u32, u32, u32) {
-    fn from(v: SemanticVersion) -> Self {
-        (v.major, v.minor, v.patch)
-    }
-}
-
-// Bump versions.
-impl SemanticVersion {
-    /// Bump the patch number of a version.
-    pub fn bump_patch(self) -> Self {
-        Self::new(self.major, self.minor, self.patch + 1)
+impl VersionSet {
+    /// Constructor for an empty set containing no version.
+    #[inline]
+    pub fn empty() -> Self {
+        Self(0)
     }
 
-    /// Bump the minor number of a version.
-    pub fn bump_minor(self) -> Self {
-        Self::new(self.major, self.minor + 1, 0)
+    /// Constructor for the set containing all versions.
+    #[inline]
+    pub fn full() -> Self {
+        Self(u64::MAX & (!1))
     }
 
-    /// Bump the major number of a version.
-    pub fn bump_major(self) -> Self {
-        Self::new(self.major + 1, 0, 0)
+    /// Constructor for a set containing exactly one version.
+    #[inline]
+    pub fn singleton(v: Version) -> Self {
+        Self(2 << v.0)
     }
-}
 
-/// Error creating [SemanticVersion] from [String].
-#[derive(Error, Debug, PartialEq, Eq)]
-pub enum VersionParseError {
-    /// [SemanticVersion] must contain major, minor, patch versions.
-    #[error("version {full_version} must contain 3 numbers separated by dot")]
-    NotThreeParts {
-        /// [SemanticVersion] that was being parsed.
-        full_version: String,
-    },
-    /// Wrapper around [ParseIntError](core::num::ParseIntError).
-    #[error("cannot parse '{version_part}' in '{full_version}' as u32: {parse_error}")]
-    ParseIntError {
-        /// [SemanticVersion] that was being parsed.
-        full_version: String,
-        /// A version part where parsing failed.
-        version_part: String,
-        /// A specific error resulted from parsing a part of the version as [u32].
-        parse_error: String,
-    },
-}
+    /// Compute the complement of this set.
+    #[inline]
+    pub fn complement(self) -> Self {
+        Self((!self.0) & (!1))
+    }
 
-impl FromStr for SemanticVersion {
-    type Err = VersionParseError;
+    /// Compute the intersection with another set.
+    #[inline]
+    pub fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parse_u32 = |part: &str| {
-            part.parse::<u32>().map_err(|e| Self::Err::ParseIntError {
-                full_version: s.to_string(),
-                version_part: part.to_string(),
-                parse_error: e.to_string(),
-            })
-        };
+    /// Compute the union with another set.
+    #[inline]
+    pub fn r#union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
 
-        let mut parts = s.split('.');
-        match (parts.next(), parts.next(), parts.next(), parts.next()) {
-            (Some(major), Some(minor), Some(patch), None) => {
-                let major = parse_u32(major)?;
-                let minor = parse_u32(minor)?;
-                let patch = parse_u32(patch)?;
-                Ok(Self {
-                    major,
-                    minor,
-                    patch,
-                })
-            }
-            _ => Err(Self::Err::NotThreeParts {
-                full_version: s.to_string(),
-            }),
+    /// Evaluate membership of a version in this set.
+    #[inline]
+    pub fn contains(self, v: Version) -> bool {
+        self.intersection(Self::singleton(v)) != Self::empty()
+    }
+
+    /// Whether the set has no overlapping versions.
+    #[inline]
+    pub fn is_disjoint(self, other: Self) -> bool {
+        self.intersection(other) == Self::empty()
+    }
+
+    /// Whether all versions of `self` are contained in `other`.
+    #[inline]
+    pub fn subset_of(self, other: Self) -> bool {
+        self == self.intersection(other)
+    }
+
+    /// Get the first version of the set.
+    #[inline]
+    pub fn first(self) -> Option<Version> {
+        if self != Self::empty() {
+            Some(Version((self.0 >> 1).trailing_zeros() as u8))
+        } else {
+            None
         }
     }
-}
 
-#[test]
-fn from_str_for_semantic_version() {
-    let parse = |str: &str| str.parse::<SemanticVersion>();
-    assert!(parse(
-        &SemanticVersion {
-            major: 0,
-            minor: 1,
-            patch: 0
+    /// Get the last version of the set.
+    #[inline]
+    pub fn last(self) -> Option<Version> {
+        if self != Self::empty() {
+            Some(Version(
+                (Version::MAX - (self.0 >> 1).leading_zeros() as u64) as u8,
+            ))
+        } else {
+            None
         }
-        .to_string()
-    )
-    .is_ok());
-    assert!(parse("1.2.3").is_ok());
-    assert_eq!(
-        parse("1.abc.3"),
-        Err(VersionParseError::ParseIntError {
-            full_version: "1.abc.3".to_owned(),
-            version_part: "abc".to_owned(),
-            parse_error: "invalid digit found in string".to_owned(),
-        })
-    );
-    assert_eq!(
-        parse("1.2.-3"),
-        Err(VersionParseError::ParseIntError {
-            full_version: "1.2.-3".to_owned(),
-            version_part: "-3".to_owned(),
-            parse_error: "invalid digit found in string".to_owned(),
-        })
-    );
-    assert_eq!(
-        parse("1.2.9876543210"),
-        Err(VersionParseError::ParseIntError {
-            full_version: "1.2.9876543210".to_owned(),
-            version_part: "9876543210".to_owned(),
-            parse_error: "number too large to fit in target type".to_owned(),
-        })
-    );
-    assert_eq!(
-        parse("1.2"),
-        Err(VersionParseError::NotThreeParts {
-            full_version: "1.2".to_owned(),
-        })
-    );
-    assert_eq!(
-        parse("1.2.3."),
-        Err(VersionParseError::NotThreeParts {
-            full_version: "1.2.3.".to_owned(),
-        })
-    );
-}
+    }
 
-impl Display for SemanticVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    /// Count set elements.
+    #[inline]
+    pub fn count(self) -> usize {
+        self.0.count_ones() as usize
     }
 }

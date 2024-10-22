@@ -4,9 +4,8 @@ use std::fmt::{self, Debug, Display};
 use std::hash::Hash;
 
 use pubgrub::{
-    resolve, DefaultStringReporter, DependencyProvider, Derived, External, Map,
-    OfflineDependencyProvider, Package, PubGrubError, Range, ReportFormatter, Reporter,
-    SemanticVersion, Term,
+    DefaultStringReporter, DependencyProvider, Derived, External, Map, OfflineDependencyProvider,
+    Package, PubGrubError, Range, ReportFormatter, Reporter, SemanticVersion, Term, VersionSet,
 };
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CustomPackage {
@@ -28,35 +27,41 @@ type Dp = OfflineDependencyProvider<CustomPackage, Range<SemanticVersion>>;
 #[derive(Debug, Default)]
 struct CustomReportFormatter;
 
-impl ReportFormatter<Dp, Range<SemanticVersion>, String> for CustomReportFormatter {
+impl ReportFormatter<Dp, String> for CustomReportFormatter {
     type Output = String;
 
-    fn format_terms(&self, terms: &Map<Package, Term<Range<SemanticVersion>>>, dp: &Dp) -> String {
+    fn format_terms(&self, terms: &Map<Package, Term>, dp: &Dp) -> String {
         let terms_vec: Vec<_> = terms
             .iter()
-            .map(|(&p, v)| (p, dp.package_to_name(p).unwrap(), v))
+            .map(|(&p, &v)| (p, dp.package_to_name(p).unwrap(), v))
             .collect();
         match terms_vec.as_slice() {
             [] => "version solving failed".into(),
-            [(_, package @ CustomPackage::Root, Term::Positive(_))] => {
+            [(_, package @ CustomPackage::Root, t)] if t.is_positive() => {
                 format!("{package} is forbidden")
             }
-            [(_, package @ CustomPackage::Root, Term::Negative(_))] => {
+            [(_, package @ CustomPackage::Root, _)] => {
                 format!("{package} is mandatory")
             }
-            [(_, package @ CustomPackage::Package(_), Term::Positive(range))] => {
-                format!("{package} {range} is forbidden")
+            &[(p, CustomPackage::Package(_), t)] if t.is_positive() => {
+                format!(
+                    "{} is forbidden",
+                    dp.package_version_set_repr(p, t.version_set()),
+                )
             }
-            [(_, package @ CustomPackage::Package(_), Term::Negative(range))] => {
-                format!("{package} {range} is mandatory")
+            &[(p, CustomPackage::Package(_), t)] => {
+                format!(
+                    "{} is mandatory",
+                    dp.package_version_set_repr(p, t.version_set()),
+                )
             }
-            &[(p1, _, Term::Positive(r1)), (p2, _, Term::Negative(r2))] => {
-                External::<_, String>::FromDependencyOf(p1, r1.clone(), p2, r2.clone())
+            &[(p1, _, t1), (p2, _, t2)] if t1.is_positive() && t2.is_negative() => {
+                External::<String>::FromDependencyOf(p1, t1.version_set(), p2, t2.version_set())
                     .display(dp)
                     .to_string()
             }
-            &[(p1, _, Term::Negative(r1)), (p2, _, Term::Positive(r2))] => {
-                External::<_, String>::FromDependencyOf(p2, r2.clone(), p1, r1.clone())
+            &[(p1, _, t1), (p2, _, t2)] if t1.is_negative() && t2.is_positive() => {
+                External::<String>::FromDependencyOf(p2, t2.version_set(), p1, t1.version_set())
                     .display(dp)
                     .to_string()
             }
@@ -67,51 +72,78 @@ impl ReportFormatter<Dp, Range<SemanticVersion>, String> for CustomReportFormatt
         }
     }
 
-    fn format_external(
-        &self,
-        external: &External<Range<SemanticVersion>, String>,
-        dp: &Dp,
-    ) -> String {
-        match external {
+    fn format_external(&self, external: &External<String>, dp: &Dp) -> String {
+        match *external {
             External::NotRoot(package, version) => {
-                let package = dp.package_to_name(*package).unwrap();
-                format!("we are solving dependencies of {package} {version}")
+                format!(
+                    "we are solving dependencies of {}",
+                    dp.package_version_repr(package, version),
+                )
             }
             External::NoVersions(package, set) => {
-                let package = dp.package_to_name(*package).unwrap();
-                if set == &Range::full() {
-                    format!("there is no available version for {package}")
+                if set == VersionSet::full() {
+                    format!(
+                        "there is no available version for {}",
+                        dp.package_to_name(package).unwrap(),
+                    )
                 } else {
-                    format!("there is no version of {package} in {set}")
+                    format!(
+                        "there is no version of {}",
+                        dp.package_version_set_repr(package, set),
+                    )
                 }
             }
-            External::Custom(package, set, reason) => {
-                let package = dp.package_to_name(*package).unwrap();
-                if set == &Range::full() {
-                    format!("dependencies of {package} are unavailable because {reason}")
+            External::Custom(package, set, ref reason) => {
+                if set == VersionSet::full() {
+                    format!(
+                        "dependencies of {} are unavailable because {reason}",
+                        dp.package_to_name(package).unwrap()
+                    )
                 } else {
-                    format!("dependencies of {package} at version {set} are unavailable because {reason}")
+                    format!(
+                        "dependencies of {} are unavailable because {reason}",
+                        dp.package_version_set_repr(package, set),
+                    )
                 }
             }
             External::FromDependencyOf(package, package_set, dependency, dependency_set) => {
-                let package = dp.package_to_name(*package).unwrap();
-                let dependency = dp.package_to_name(*dependency).unwrap();
-                if package_set == &Range::full() && dependency_set == &Range::full() {
-                    format!("{package} depends on {dependency}")
-                } else if package_set == &Range::full() {
-                    format!("{package} depends on {dependency} {dependency_set}")
-                } else if dependency_set == &Range::full() {
-                    if matches!(package, CustomPackage::Root) {
+                let package_name = dp.package_to_name(package).unwrap();
+                if package_set == VersionSet::full() && dependency_set == VersionSet::full() {
+                    format!(
+                        "{package_name} depends on {}",
+                        dp.package_to_name(dependency).unwrap()
+                    )
+                } else if package_set == VersionSet::full() {
+                    format!(
+                        "{package_name} depends on {}",
+                        dp.package_version_set_repr(dependency, dependency_set),
+                    )
+                } else if dependency_set == VersionSet::full() {
+                    if matches!(package_name, CustomPackage::Root) {
                         // Exclude the dummy version for root packages
-                        format!("{package} depends on {dependency}")
+                        format!(
+                            "{package_name} depends on {}",
+                            dp.package_to_name(dependency).unwrap()
+                        )
                     } else {
-                        format!("{package} {package_set} depends on {dependency}")
+                        format!(
+                            "{} depends on {}",
+                            dp.package_version_set_repr(package, package_set),
+                            dp.package_to_name(dependency).unwrap()
+                        )
                     }
-                } else if matches!(package, CustomPackage::Root) {
+                } else if matches!(package_name, CustomPackage::Root) {
                     // Exclude the dummy version for root packages
-                    format!("{package} depends on {dependency} {dependency_set}")
+                    format!(
+                        "{package_name} depends on {}",
+                        dp.package_version_set_repr(dependency, dependency_set),
+                    )
                 } else {
-                    format!("{package} {package_set} depends on {dependency} {dependency_set}")
+                    format!(
+                        "{} depends on {}",
+                        dp.package_version_set_repr(package, package_set),
+                        dp.package_version_set_repr(dependency, dependency_set),
+                    )
                 }
             }
         }
@@ -120,9 +152,9 @@ impl ReportFormatter<Dp, Range<SemanticVersion>, String> for CustomReportFormatt
     /// Simplest case, we just combine two external incompatibilities.
     fn explain_both_external(
         &self,
-        external1: &External<Range<SemanticVersion>, String>,
-        external2: &External<Range<SemanticVersion>, String>,
-        current_terms: &Map<Package, Term<Range<SemanticVersion>>>,
+        external1: &External<String>,
+        external2: &External<String>,
+        current_terms: &Map<Package, Term>,
         dp: &Dp,
     ) -> String {
         // TODO: order should be chosen to make it more logical.
@@ -138,10 +170,10 @@ impl ReportFormatter<Dp, Range<SemanticVersion>, String> for CustomReportFormatt
     fn explain_both_ref(
         &self,
         ref_id1: usize,
-        derived1: &Derived<Range<SemanticVersion>, String>,
+        derived1: &Derived<String>,
         ref_id2: usize,
-        derived2: &Derived<Range<SemanticVersion>, String>,
-        current_terms: &Map<Package, Term<Range<SemanticVersion>>>,
+        derived2: &Derived<String>,
+        current_terms: &Map<Package, Term>,
         dp: &Dp,
     ) -> String {
         // TODO: order should be chosen to make it more logical.
@@ -161,9 +193,9 @@ impl ReportFormatter<Dp, Range<SemanticVersion>, String> for CustomReportFormatt
     fn explain_ref_and_external(
         &self,
         ref_id: usize,
-        derived: &Derived<Range<SemanticVersion>, String>,
-        external: &External<Range<SemanticVersion>, String>,
-        current_terms: &Map<Package, Term<Range<SemanticVersion>>>,
+        derived: &Derived<String>,
+        external: &External<String>,
+        current_terms: &Map<Package, Term>,
         dp: &Dp,
     ) -> String {
         // TODO: order should be chosen to make it more logical.
@@ -179,8 +211,8 @@ impl ReportFormatter<Dp, Range<SemanticVersion>, String> for CustomReportFormatt
     /// Add an external cause to the chain of explanations.
     fn and_explain_external(
         &self,
-        external: &External<Range<SemanticVersion>, String>,
-        current_terms: &Map<Package, Term<Range<SemanticVersion>>>,
+        external: &External<String>,
+        current_terms: &Map<Package, Term>,
         dp: &Dp,
     ) -> String {
         format!(
@@ -194,8 +226,8 @@ impl ReportFormatter<Dp, Range<SemanticVersion>, String> for CustomReportFormatt
     fn and_explain_ref(
         &self,
         ref_id: usize,
-        derived: &Derived<Range<SemanticVersion>, String>,
-        current_terms: &Map<Package, Term<Range<SemanticVersion>>>,
+        derived: &Derived<String>,
+        current_terms: &Map<Package, Term>,
         dp: &Dp,
     ) -> String {
         format!(
@@ -209,9 +241,9 @@ impl ReportFormatter<Dp, Range<SemanticVersion>, String> for CustomReportFormatt
     /// Add an already explained incompat to the chain of explanations.
     fn and_explain_prior_and_external(
         &self,
-        prior_external: &External<Range<SemanticVersion>, String>,
-        external: &External<Range<SemanticVersion>, String>,
-        current_terms: &Map<Package, Term<Range<SemanticVersion>>>,
+        prior_external: &External<String>,
+        external: &External<String>,
+        current_terms: &Map<Package, Term>,
         dp: &Dp,
     ) -> String {
         format!(
@@ -226,6 +258,7 @@ impl ReportFormatter<Dp, Range<SemanticVersion>, String> for CustomReportFormatt
 fn main() {
     let mut dependency_provider =
         OfflineDependencyProvider::<CustomPackage, Range<SemanticVersion>>::new();
+
     // Define the root package with a dependency on a package we do not provide
     dependency_provider.add_dependencies(
         CustomPackage::Root,
@@ -237,7 +270,7 @@ fn main() {
     );
 
     // Run the algorithm
-    match resolve(&mut dependency_provider, &CustomPackage::Root, (0, 0, 0)) {
+    match dependency_provider.resolve(&CustomPackage::Root, (0, 0, 0)) {
         Ok(sol) => println!("{:?}", sol),
         Err(PubGrubError::NoSolution(derivation_tree)) => {
             eprintln!("No solution.\n");

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use pubgrub::{resolve, OfflineDependencyProvider, Range};
+use pubgrub::{OfflineDependencyProvider, Range};
 
 type NumVS = Range<u32>;
 
@@ -19,6 +19,12 @@ fn main() {
     dependency_provider.add_dependencies("icons", 1u32, []);
 
     // Run the algorithm.
-    let solution = resolve(&mut dependency_provider, &"root", 1u32);
-    println!("Solution: {:?}", solution);
+    let solution = dependency_provider.resolve(&"root", 1u32).unwrap();
+    println!(
+        "Solution: {:?}",
+        solution.iter().map(|(p, v)| {
+            (p, dependency_provider.versions(p).unwrap().nth(v.get() as usize).unwrap())
+        })
+        .collect::<Vec<_>>()
+    );
 }

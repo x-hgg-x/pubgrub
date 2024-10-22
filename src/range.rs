@@ -57,7 +57,6 @@ use std::ops::Bound::{self, Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 
 use crate::internal::SmallVec;
-use crate::VersionSet;
 
 /// A Range represents multiple intervals of a continuous range of monotone increasing
 /// values.
@@ -576,7 +575,7 @@ fn group_adjacent_locations(
 
 impl<V: Ord + Clone> Range<V> {
     /// Computes the union of this `Range` and another.
-    pub fn union(&self, other: &Self) -> Self {
+    pub fn r#union(&self, other: &Self) -> Self {
         let mut output: SmallVec<Interval<V>> = SmallVec::empty();
         let mut accumulator: Option<(&Bound<_>, &Bound<_>)> = None;
         let mut left_iter = self.segments.iter().peekable();
@@ -838,46 +837,6 @@ impl<V: Ord + Clone> Range<V> {
     }
 }
 
-impl<T: Debug + Display + Clone + Eq + Ord> VersionSet for Range<T> {
-    type V = T;
-
-    fn empty() -> Self {
-        Range::empty()
-    }
-
-    fn singleton(v: Self::V) -> Self {
-        Range::singleton(v)
-    }
-
-    fn complement(&self) -> Self {
-        Range::complement(self)
-    }
-
-    fn intersection(&self, other: &Self) -> Self {
-        Range::intersection(self, other)
-    }
-
-    fn contains(&self, v: &Self::V) -> bool {
-        Range::contains(self, v)
-    }
-
-    fn full() -> Self {
-        Range::full()
-    }
-
-    fn union(&self, other: &Self) -> Self {
-        Range::union(self, other)
-    }
-
-    fn is_disjoint(&self, other: &Self) -> bool {
-        Range::is_disjoint(self, other)
-    }
-
-    fn subset_of(&self, other: &Self) -> bool {
-        Range::subset_of(self, other)
-    }
-}
-
 // REPORT ######################################################################
 
 impl<V: Display + Eq> Display for Range<V> {
@@ -1089,12 +1048,12 @@ pub mod tests {
 
         #[test]
         fn union_of_complements_is_any(range in strategy()) {
-            assert_eq!(range.complement().union(&range), Range::full());
+            assert_eq!(range.complement().r#union(&range), Range::full());
         }
 
         #[test]
         fn union_contains_either(r1 in strategy(), r2 in strategy(), version in version_strat()) {
-            assert_eq!(r1.union(&r2).contains(&version), r1.contains(&version) || r2.contains(&version));
+            assert_eq!(r1.r#union(&r2).contains(&version), r1.contains(&version) || r2.contains(&version));
         }
 
         #[test]
@@ -1116,7 +1075,7 @@ pub mod tests {
                 .intersection(&r2.complement())
                 .complement()
                 .check_invariants();
-            assert_eq!(r1.union(&r2), union_def);
+            assert_eq!(r1.r#union(&r2), union_def);
         }
 
         // Testing contains --------------------------------
@@ -1228,11 +1187,11 @@ pub mod tests {
             Range::higher_than(1u32),
             Range::strictly_higher_than(1u32),
             Range::singleton(2u32),
-            Range::singleton(2u32).union(&Range::singleton(3u32)),
+            Range::singleton(2u32).r#union(&Range::singleton(3u32)),
             Range::singleton(2u32)
-                .union(&Range::singleton(3u32))
-                .union(&Range::singleton(4u32)),
-            Range::singleton(2u32).union(&Range::singleton(4u32)),
+                .r#union(&Range::singleton(3u32))
+                .r#union(&Range::singleton(4u32)),
+            Range::singleton(2u32).r#union(&Range::singleton(4u32)),
             Range::singleton(3u32),
         ];
 

@@ -7,8 +7,7 @@ use thiserror::Error;
 use crate::{DependencyProvider, DerivationTree};
 
 /// There is no solution for this set of dependencies.
-pub type NoSolutionError<DP> =
-    DerivationTree<<DP as DependencyProvider>::VS, <DP as DependencyProvider>::M>;
+pub type NoSolutionError<DP> = DerivationTree<<DP as DependencyProvider>::M>;
 
 /// Errors that may occur while solving dependencies.
 #[derive(Error)]
@@ -23,12 +22,10 @@ pub enum PubGrubError<DP: DependencyProvider> {
 
     /// Error arising when the implementer of [DependencyProvider] returned an error in the method
     /// [get_dependencies](DependencyProvider::get_dependencies).
-    #[error("Retrieving dependencies of {package} {version} failed")]
+    #[error("Retrieving dependencies of {package_version} failed")]
     ErrorRetrievingDependencies {
-        /// Package whose dependencies we want.
-        package: DP::P,
-        /// Version of the package for which we want the dependencies.
-        version: DP::V,
+        /// Package and version whose dependencies we want.
+        package_version: DP::PV,
         /// Error raised by the implementer of
         /// [DependencyProvider].
         source: DP::Err,
@@ -64,13 +61,11 @@ where
             Self::NoRoot => f.debug_struct("NoRoot").finish(),
             Self::NoSolution(err) => f.debug_tuple("NoSolution").field(&err).finish(),
             Self::ErrorRetrievingDependencies {
-                package,
-                version,
+                package_version,
                 source,
             } => f
                 .debug_struct("ErrorRetrievingDependencies")
-                .field("package", package)
-                .field("version", version)
+                .field("package_version", package_version)
                 .field("source", source)
                 .finish(),
             Self::ErrorChoosingPackageVersion(arg0) => f

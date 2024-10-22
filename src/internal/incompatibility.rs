@@ -6,10 +6,10 @@
 use std::fmt::{self, Debug, Display};
 use std::sync::Arc;
 
-use crate::internal::{Arena, Id, SmallMap};
 use crate::{
+    internal::{Arena, Id, SmallMap},
     term, DefaultStringReportFormatter, DependencyProvider, DerivationTree, Derived, External, Map,
-    Package, ReportFormatter, Set, Term, VersionSet,
+    Package, ReportFormatter, Set, Term, Version, VersionSet,
 };
 
 /// An incompatibility is a set of terms for different packages
@@ -28,29 +28,28 @@ use crate::{
 /// during conflict resolution. More about all this in
 /// [PubGrub documentation](https://github.com/dart-lang/pub/blob/master/doc/solver.md#incompatibility).
 #[derive(Debug, Clone)]
-pub(crate) struct Incompatibility<VS: VersionSet, M: Clone + Debug + Display> {
-    package_terms: SmallMap<Package, Term<VS>>,
-    kind: Kind<VS, M>,
+pub(crate) struct Incompatibility<M: Clone + Debug + Display> {
+    package_terms: SmallMap<Package, Term>,
+    kind: Kind<M>,
 }
 
 /// Type alias of unique identifiers for incompatibilities.
-pub(crate) type IncompId<VS, M> = Id<Incompatibility<VS, M>>;
+pub(crate) type IncompId<M> = Id<Incompatibility<M>>;
 
-pub(crate) type IncompDpId<DP> =
-    IncompId<<DP as DependencyProvider>::VS, <DP as DependencyProvider>::M>;
+pub(crate) type IncompDpId<DP> = IncompId<<DP as DependencyProvider>::M>;
 
 #[derive(Debug, Clone)]
-enum Kind<VS: VersionSet, M: Clone + Debug + Display> {
+enum Kind<M: Clone + Debug + Display> {
     /// Initial incompatibility aiming at picking the root package for the first decision.
     ///
     /// This incompatibility drives the resolution, it requires that we pick the (virtual) root
     /// packages.
-    NotRoot(Package, VS::V),
+    NotRoot(Package, Version),
     /// There are no versions in the given range for this package.
     ///
     /// This incompatibility is used when we tried all versions in a range and no version
     /// worked, so we have to backtrack
-    NoVersions(Package, VS),
+    NoVersions(Package, VersionSet),
     /// Incompatibility coming from the dependencies of a given package.
     ///
     /// If a@1 depends on b>=1,<2, we create an incompatibility with terms `{a 1, b <1,>=2}` with
@@ -58,17 +57,17 @@ enum Kind<VS: VersionSet, M: Clone + Debug + Display> {
     ///
     /// We can merge multiple dependents with the same version. For example, if a@1 depends on b and
     /// a@2 depends on b, we can say instead a@1||2 depends on b.
-    FromDependencyOf(Package, VS, Package, VS),
+    FromDependencyOf(Package, VersionSet, Package, VersionSet),
     /// Derived from two causes. Stores cause ids.
     ///
     /// For example, if a -> b and b -> c, we can derive a -> c.
-    DerivedFrom(IncompId<VS, M>, IncompId<VS, M>),
+    DerivedFrom(IncompId<M>, IncompId<M>),
     /// The package is unavailable for reasons outside pubgrub.
     ///
     /// Examples:
     /// * The version would require building the package, but builds are disabled.
     /// * The package is not available in the cache, but internet access has been disabled.
-    Custom(Package, VS, M),
+    Custom(Package, VersionSet, M),
 }
 
 /// A Relation describes how a set of terms can be compared to an incompatibility.
@@ -88,23 +87,24 @@ pub(crate) enum Relation {
     Inconclusive,
 }
 
-impl<VS: VersionSet, M: Clone + Debug + Display> Incompatibility<VS, M> {
+impl<M: Clone + Debug + Display> Incompatibility<M> {
     /// Create the initial "not Root" incompatibility.
-    pub(crate) fn not_root(package: Package, version: VS::V) -> Self {
+    pub(crate) fn not_root(package: Package, version: Version) -> Self {
         Self {
             package_terms: SmallMap::One([(
                 package,
-                Term::Negative(VS::singleton(version.clone())),
+                Term::negative(VersionSet::singleton(version)),
             )]),
             kind: Kind::NotRoot(package, version),
         }
     }
 
     /// Create an incompatibility to remember that a given set does not contain any version.
-    pub(crate) fn no_versions(package: Package, term: Term<VS>) -> Self {
-        let set = match &term {
-            Term::Positive(r) => r.clone(),
-            Term::Negative(_) => panic!("No version should have a positive term"),
+    pub(crate) fn no_versions(package: Package, term: Term) -> Self {
+        let set = if term.is_positive() {
+            term.version_set()
+        } else {
+            panic!("No version should have a positive term")
         };
         Self {
             package_terms: SmallMap::One([(package, term)]),
@@ -114,10 +114,11 @@ impl<VS: VersionSet, M: Clone + Debug + Display> Incompatibility<VS, M> {
 
     /// Create an incompatibility for a reason outside pubgrub.
     #[allow(dead_code)] // Used by uv
-    pub(crate) fn custom_term(package: Package, term: Term<VS>, metadata: M) -> Self {
-        let set = match &term {
-            Term::Positive(r) => r.clone(),
-            Term::Negative(_) => panic!("No version should have a positive term"),
+    pub(crate) fn custom_term(package: Package, term: Term, metadata: M) -> Self {
+        let set = if term.is_positive() {
+            term.version_set()
+        } else {
+            panic!("No version should have a positive term")
         };
         Self {
             package_terms: SmallMap::One([(package, term)]),
@@ -126,9 +127,9 @@ impl<VS: VersionSet, M: Clone + Debug + Display> Incompatibility<VS, M> {
     }
 
     /// Create an incompatibility for a reason outside pubgrub.
-    pub(crate) fn custom_version(package: Package, version: VS::V, metadata: M) -> Self {
-        let set = VS::singleton(version);
-        let term = Term::Positive(set.clone());
+    pub(crate) fn custom_version(package: Package, version: Version, metadata: M) -> Self {
+        let set = VersionSet::singleton(version);
+        let term = Term::positive(set);
         Self {
             package_terms: SmallMap::One([(package, term)]),
             kind: Kind::Custom(package, set, metadata),
@@ -136,15 +137,19 @@ impl<VS: VersionSet, M: Clone + Debug + Display> Incompatibility<VS, M> {
     }
 
     /// Build an incompatibility from a given dependency.
-    pub(crate) fn from_dependency(package: Package, versions: VS, dep: (Package, VS)) -> Self {
+    pub(crate) fn from_dependency(
+        package: Package,
+        versions: VersionSet,
+        dep: (Package, VersionSet),
+    ) -> Self {
         let (p2, set2) = dep;
         Self {
-            package_terms: if set2 == VS::empty() {
-                SmallMap::One([(package, Term::Positive(versions.clone()))])
+            package_terms: if set2 == VersionSet::empty() {
+                SmallMap::One([(package, Term::positive(versions))])
             } else {
                 SmallMap::Two([
-                    (package, Term::Positive(versions.clone())),
-                    (p2, Term::Negative(set2.clone())),
+                    (package, Term::positive(versions)),
+                    (p2, Term::negative(set2)),
                 ])
             },
             kind: Kind::FromDependencyOf(package, versions, p2, set2),
@@ -183,17 +188,17 @@ impl<VS: VersionSet, M: Clone + Debug + Display> Incompatibility<VS, M> {
         if dep_term != other.get(p2) {
             return None;
         }
-        return Some(Self::from_dependency(
+        Some(Self::from_dependency(
             p1,
             self.get(p1)
                 .unwrap()
                 .unwrap_positive()
-                .union(other.get(p1).unwrap().unwrap_positive()), // It is safe to `simplify` here
+                .r#union(other.get(p1).unwrap().unwrap_positive()), // It is safe to `simplify` here
             (
                 p2,
-                dep_term.map_or(VS::empty(), |v| v.unwrap_negative().clone()),
+                dep_term.map_or(VersionSet::empty(), |v| v.unwrap_negative()),
             ),
-        ));
+        ))
     }
 
     /// Prior cause of two incompatibilities using the rule of resolution.
@@ -212,9 +217,9 @@ impl<VS: VersionSet, M: Clone + Debug + Display> Incompatibility<VS, M> {
         let satisfier_cause_terms = &incompatibility_store[satisfier_cause].package_terms;
         package_terms.merge(
             satisfier_cause_terms.iter().filter(|(&p, _)| p != package),
-            |t1, t2| Some(t1.intersection(t2)),
+            |&t1, &t2| Some(t1.intersection(t2)),
         );
-        let term = t1.union(satisfier_cause_terms.get(&package).unwrap());
+        let term = t1.r#union(*satisfier_cause_terms.get(&package).unwrap());
         if term != Term::any() {
             package_terms.insert(package, term);
         }
@@ -226,7 +231,7 @@ impl<VS: VersionSet, M: Clone + Debug + Display> Incompatibility<VS, M> {
 
     /// Check if an incompatibility should mark the end of the algorithm
     /// because it satisfies the root package.
-    pub(crate) fn is_terminal(&self, root_package: Package, root_version: &VS::V) -> bool {
+    pub(crate) fn is_terminal(&self, root_package: Package, root_version: Version) -> bool {
         if self.package_terms.len() == 0 {
             true
         } else if self.package_terms.len() > 1 {
@@ -238,16 +243,14 @@ impl<VS: VersionSet, M: Clone + Debug + Display> Incompatibility<VS, M> {
     }
 
     /// Get the term related to a given package (if it exists).
-    pub(crate) fn get(&self, package: Package) -> Option<&Term<VS>> {
-        self.package_terms.get(&package)
+    pub(crate) fn get(&self, package: Package) -> Option<Term> {
+        self.package_terms.get(&package).copied()
     }
 
     /// Iterate over packages.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (Package, &Term<VS>)> {
-        self.package_terms.iter().map(|(&k, v)| (k, v))
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (Package, Term)> + use<'_, M> {
+        self.package_terms.iter().map(|(&k, &v)| (k, v))
     }
-
-    // Reporting ###############################################################
 
     /// Retrieve parent causes if of type DerivedFrom.
     pub(crate) fn causes(&self) -> Option<(Id<Self>, Id<Self>)> {
@@ -262,8 +265,8 @@ impl<VS: VersionSet, M: Clone + Debug + Display> Incompatibility<VS, M> {
         self_id: Id<Self>,
         shared_ids: &Set<Id<Self>>,
         store: &Arena<Self>,
-        precomputed: &Map<Id<Self>, Arc<DerivationTree<VS, M>>>,
-    ) -> DerivationTree<VS, M> {
+        precomputed: &Map<Id<Self>, Arc<DerivationTree<M>>>,
+    ) -> DerivationTree<M> {
         match store[self_id].kind.clone() {
             Kind::DerivedFrom(id1, id2) => {
                 let derived = Derived {
@@ -284,23 +287,21 @@ impl<VS: VersionSet, M: Clone + Debug + Display> Incompatibility<VS, M> {
                 DerivationTree::External(External::NotRoot(package, version))
             }
             Kind::NoVersions(package, set) => {
-                DerivationTree::External(External::NoVersions(package, set.clone()))
+                DerivationTree::External(External::NoVersions(package, set))
             }
             Kind::FromDependencyOf(package, set, dep_package, dep_set) => DerivationTree::External(
-                External::FromDependencyOf(package, set.clone(), dep_package, dep_set.clone()),
+                External::FromDependencyOf(package, set, dep_package, dep_set),
             ),
             Kind::Custom(package, set, metadata) => {
-                DerivationTree::External(External::Custom(package, set.clone(), metadata.clone()))
+                DerivationTree::External(External::Custom(package, set, metadata.clone()))
             }
         }
     }
-}
 
-impl<'a, VS: VersionSet + 'a, M: Clone + Debug + Display + 'a> Incompatibility<VS, M> {
     /// CF definition of Relation enum.
-    pub(crate) fn relation(&self, terms: impl Fn(Package) -> Option<&'a Term<VS>>) -> Relation {
+    pub(crate) fn relation(&self, terms: impl Fn(Package) -> Option<Term>) -> Relation {
         let mut relation = Relation::Satisfied;
-        for (&package, incompat_term) in self.package_terms.iter() {
+        for (&package, &incompat_term) in self.package_terms.iter() {
             match terms(package).map(|term| incompat_term.relation_with(term)) {
                 Some(term::Relation::Satisfied) => {}
                 Some(term::Relation::Contradicted) => {
@@ -322,13 +323,11 @@ impl<'a, VS: VersionSet + 'a, M: Clone + Debug + Display + 'a> Incompatibility<V
         }
         relation
     }
-}
 
-impl<VS: VersionSet, M: Clone + Debug + Display> Incompatibility<VS, M> {
     pub(crate) fn display<'a, DP: DependencyProvider>(
         &'a self,
         dependency_provider: &'a DP,
-    ) -> IncompatibilityDisplay<'a, DP, VS, M> {
+    ) -> IncompatibilityDisplay<'a, DP, M> {
         IncompatibilityDisplay {
             incompatibility: self,
             dependency_provider,
@@ -336,24 +335,19 @@ impl<VS: VersionSet, M: Clone + Debug + Display> Incompatibility<VS, M> {
     }
 }
 
-pub(crate) struct IncompatibilityDisplay<
-    'a,
-    DP: DependencyProvider,
-    VS: VersionSet,
-    M: Clone + Debug + Display,
-> {
-    incompatibility: &'a Incompatibility<VS, M>,
+pub(crate) struct IncompatibilityDisplay<'a, DP: DependencyProvider, M: Clone + Debug + Display> {
+    incompatibility: &'a Incompatibility<M>,
     dependency_provider: &'a DP,
 }
 
-impl<'a, DP: DependencyProvider, VS: VersionSet, M: Clone + Debug + Display> Display
-    for IncompatibilityDisplay<'a, DP, VS, M>
+impl<'a, DP: DependencyProvider, M: Clone + Debug + Display> Display
+    for IncompatibilityDisplay<'a, DP, M>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{}",
-            ReportFormatter::<DP, VS, M>::format_terms(
+            ReportFormatter::<DP, M>::format_terms(
                 &DefaultStringReportFormatter,
                 &self.incompatibility.package_terms.as_map(),
                 self.dependency_provider
@@ -370,7 +364,6 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::term::tests::strategy as term_strat;
-    use crate::Range;
 
     proptest! {
         /// For any three different packages p1, p2 and p3,
@@ -384,13 +377,13 @@ pub(crate) mod tests {
         fn rule_of_resolution(t1 in term_strat(), t2 in term_strat(), t3 in term_strat()) {
             let mut store = Arena::new();
             let i1 = store.alloc(Incompatibility {
-                package_terms: SmallMap::Two([(Package(1), t1.clone()), (Package(2), t2.negate())]),
-                kind: Kind::< _, String>::FromDependencyOf(Package(1), Range::full(), Package(2), Range::full())
+                package_terms: SmallMap::Two([(Package(1), t1), (Package(2), t2.negate())]),
+                kind: Kind::<String>::FromDependencyOf(Package(1), VersionSet::full(), Package(2), VersionSet::full())
             });
 
             let i2 = store.alloc(Incompatibility {
-                package_terms: SmallMap::Two([(Package(2), t2), (Package(3), t3.clone())]),
-                kind: Kind::< _, String>::FromDependencyOf(Package(2), Range::full(), Package(3), Range::full())
+                package_terms: SmallMap::Two([(Package(2), t2), (Package(3), t3)]),
+                kind: Kind::<String>::FromDependencyOf(Package(2), VersionSet::full(), Package(3), VersionSet::full())
             });
 
             let mut i3 = Map::default();

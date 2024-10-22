@@ -43,7 +43,7 @@
 //! #     let mut dependency_provider = OfflineDependencyProvider::<&str, NumVS>::new();
 //! #     let package = "root";
 //! #     let version = 1u32;
-//! let solution = resolve(&mut dependency_provider, &package, version)?;
+//! let solution = dependency_provider.resolve(&package, version)?;
 //! #     Ok(())
 //! # }
 //! # fn main() {
@@ -59,19 +59,17 @@
 //! to satisfy the dependencies of that package and version pair.
 //! If there is no solution, the reason will be provided as clear as possible.
 
-use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet};
-use std::convert::Infallible;
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 
 use log::{debug, info};
 
+use crate::Version;
 use crate::{
     internal::{Incompatibility, State},
-    DependencyConstraints, FnvIndexSet, Map, Package, PubGrubError, SelectedDependencies,
-    VersionSet,
+    DependencyConstraints, Map, Package, PubGrubError, SelectedDependencies, VersionSet,
 };
 
 /// Main function of the library.
@@ -79,13 +77,13 @@ use crate::{
 pub fn resolve<DP: DependencyProvider>(
     dependency_provider: &mut DP,
     package_name: &DP::P,
-    version: impl Into<DP::V>,
+    version: Version,
 ) -> Result<SelectedDependencies<DP>, PubGrubError<DP>> {
     let Some(package) = dependency_provider.name_to_package(package_name) else {
         return Err(PubGrubError::NoRoot);
     };
-    let mut state: State<DP> = State::init(package, version.into());
-    let mut added_dependencies: Map<Package, BTreeSet<DP::V>> = Map::default();
+    let mut state: State<DP> = State::init(package, version);
+    let mut added_dependencies: Map<Package, BTreeSet<Version>> = Map::default();
     let mut next = package;
     loop {
         dependency_provider
@@ -129,54 +127,45 @@ pub fn resolve<DP: DependencyProvider>(
         // Pick the next compatible version.
         let v = match decision {
             None => {
-                let inc = Incompatibility::no_versions(next, term_intersection.clone());
+                let inc = Incompatibility::no_versions(next, term_intersection);
                 state.add_incompatibility(inc);
                 continue;
             }
             Some(x) => x,
         };
 
-        if !term_intersection.contains(&v) {
+        if !term_intersection.contains(v) {
             return Err(PubGrubError::Failure(
                 "choose_package_version picked an incompatible version".into(),
             ));
         }
 
-        let is_new_dependency = added_dependencies
-            .entry(next)
-            .or_default()
-            .insert(v.clone());
+        let is_new_dependency = added_dependencies.entry(next).or_default().insert(v);
 
         if is_new_dependency {
             // Retrieve that package dependencies.
             let p = next;
-            let dependencies = dependency_provider.get_dependencies(p, &v).map_err(|err| {
+            let dependencies = dependency_provider.get_dependencies(p, v).map_err(|err| {
                 PubGrubError::ErrorRetrievingDependencies {
-                    package: dependency_provider.package_to_name(p).unwrap().clone(),
-                    version: v.clone(),
+                    package_version: dependency_provider.package_version_repr(p, v),
                     source: err,
                 }
             })?;
 
             let dependencies = match dependencies {
                 Dependencies::Unavailable(reason) => {
-                    state.add_incompatibility(Incompatibility::custom_version(
-                        p,
-                        v.clone(),
-                        reason,
-                    ));
+                    state.add_incompatibility(Incompatibility::custom_version(p, v, reason));
                     continue;
                 }
                 Dependencies::Available(x) => x,
             };
 
             // Add that package and version if the dependencies are not problematic.
-            let dep_incompats =
-                state.add_incompatibility_from_dependencies(p, v.clone(), dependencies);
+            let dep_incompats = state.add_incompatibility_from_dependencies(p, v, dependencies);
 
             state.partial_solution.add_version(
                 p,
-                v.clone(),
+                v,
                 dep_incompats,
                 &state.incompatibility_store,
                 dependency_provider,
@@ -185,13 +174,10 @@ pub fn resolve<DP: DependencyProvider>(
             // `dep_incompats` are already in `incompatibilities` so we know there are not satisfied
             // terms and can add the decision directly.
             info!(
-                "add_decision (not first time): {} @ {}",
-                dependency_provider.package_to_name(next).unwrap(),
-                v
+                "add_decision (not first time): {}",
+                dependency_provider.package_version_repr(package, v)
             );
-            state
-                .partial_solution
-                .add_decision(next, v, dependency_provider);
+            state.partial_solution.add_decision(next, v);
         }
     }
 }
@@ -199,11 +185,11 @@ pub fn resolve<DP: DependencyProvider>(
 /// An enum used by [DependencyProvider] that holds information about package dependencies.
 /// For each [Package] there is a set of versions allowed as a dependency.
 #[derive(Clone)]
-pub enum Dependencies<VS: VersionSet, M: Clone + Debug + Display> {
+pub enum Dependencies<M: Clone + Debug + Display> {
     /// Package dependencies are unavailable with the reason why they are missing.
     Unavailable(M),
     /// Container for all available package versions.
-    Available(DependencyConstraints<VS>),
+    Available(DependencyConstraints),
 }
 
 /// Trait that allows the algorithm to retrieve available packages and their dependencies.
@@ -212,16 +198,11 @@ pub trait DependencyProvider {
     /// How this provider stores the name of the packages.
     type P: Debug + Display + Clone + Eq + Hash;
 
-    /// How this provider stores the versions of the packages.
-    ///
-    /// A common choice is [`SemanticVersion`][crate::version::SemanticVersion].
-    type V: Debug + Display + Clone + Ord;
+    /// Representation of a package version.
+    type PV: Debug + Display;
 
-    /// How this provider stores the version requirements for the packages.
-    /// The requirements must be able to process the same kind of version as this dependency provider.
-    ///
-    /// A common choice is [`Range`][crate::range::Range].
-    type VS: VersionSet<V = Self::V>;
+    /// Representation of a package version set.
+    type PVS: Debug + Display;
 
     /// Type for custom incompatibilities.
     ///
@@ -261,7 +242,7 @@ pub trait DependencyProvider {
     ///
     /// Note: the resolver may call this even when the range has not changed,
     /// if it is more efficient for the resolvers internal data structures.
-    fn prioritize(&mut self, package: Package, range: &Self::VS) -> Self::Priority;
+    fn prioritize(&mut self, package: Package, range: VersionSet) -> Self::Priority;
     /// The type returned from `prioritize`. The resolver does not care what type this is
     /// as long as it can pick a largest one and clone it.
     ///
@@ -280,8 +261,8 @@ pub trait DependencyProvider {
     fn choose_version(
         &mut self,
         package: Package,
-        range: &Self::VS,
-    ) -> Result<Option<Self::V>, Self::Err>;
+        range: VersionSet,
+    ) -> Result<Option<Version>, Self::Err>;
 
     /// Retrieves the package dependencies.
     /// Return [Dependencies::Unavailable] if its dependencies are unavailable.
@@ -289,8 +270,8 @@ pub trait DependencyProvider {
     fn get_dependencies(
         &mut self,
         package: Package,
-        version: &Self::V,
-    ) -> Result<Dependencies<Self::VS, Self::M>, Self::Err>;
+        version: Version,
+    ) -> Result<Dependencies<Self::M>, Self::Err>;
 
     /// This is called fairly regularly during the resolution,
     /// if it returns an Err then resolution will be terminated.
@@ -306,224 +287,10 @@ pub trait DependencyProvider {
 
     /// Get the package correponding to a name.
     fn name_to_package(&self, package_name: &Self::P) -> Option<Package>;
-}
 
-/// A basic implementation of [DependencyProvider].
-#[derive(Debug, Clone, Default)]
-pub struct OfflineDependencyProvider<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> {
-    arena: FnvIndexSet<P>,
-    dependencies: Map<Package, BTreeMap<VS::V, Map<Package, VS>>>,
-}
+    /// Get a representation of a package version.
+    fn package_version_repr(&self, package: Package, version: Version) -> Self::PV;
 
-#[cfg(feature = "serde")]
-impl<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> serde::Serialize
-    for OfflineDependencyProvider<P, VS>
-where
-    P: serde::Serialize,
-    VS::V: serde::Serialize,
-    VS: serde::Serialize,
-{
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let map = self
-            .dependencies
-            .iter()
-            .map(|(p, bmap)| {
-                (
-                    &self.arena[p.0 as usize],
-                    bmap.iter()
-                        .map(|(v, hmap)| {
-                            (
-                                v,
-                                hmap.iter()
-                                    .map(|(dep, vs)| (&self.arena[dep.0 as usize], vs))
-                                    .collect::<Map<_, _>>(),
-                            )
-                        })
-                        .collect::<BTreeMap<_, _>>(),
-                )
-            })
-            .collect::<Map<_, _>>();
-
-        map.serialize(serializer)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de, P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> serde::Deserialize<'de>
-    for OfflineDependencyProvider<P, VS>
-where
-    P: serde::Deserialize<'de>,
-    VS::V: serde::Deserialize<'de>,
-    VS: serde::Deserialize<'de>,
-{
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let dependencies = <Map<P, BTreeMap<VS::V, Map<P, VS>>>>::deserialize(deserializer)?;
-
-        let arena = dependencies
-            .iter()
-            .flat_map(|(p, bmap)| {
-                [p].into_iter()
-                    .chain(bmap.values().flat_map(|hmap| hmap.keys()))
-            })
-            .cloned()
-            .collect::<FnvIndexSet<_>>();
-
-        let dependencies = dependencies
-            .into_iter()
-            .map(|(p, bmap)| {
-                (
-                    Package(arena.get_index_of(&p).unwrap() as u32),
-                    bmap.into_iter()
-                        .map(|(v, hmap)| {
-                            (
-                                v,
-                                hmap.into_iter()
-                                    .map(|(dep, vs)| {
-                                        (Package(arena.get_index_of(&dep).unwrap() as u32), vs)
-                                    })
-                                    .collect::<Map<_, _>>(),
-                            )
-                        })
-                        .collect::<BTreeMap<_, _>>(),
-                )
-            })
-            .collect::<Map<_, _>>();
-
-        Ok(Self {
-            arena,
-            dependencies,
-        })
-    }
-}
-
-impl<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> OfflineDependencyProvider<P, VS> {
-    /// Creates an empty OfflineDependencyProvider with no dependencies.
-    pub fn new() -> Self {
-        Self {
-            arena: FnvIndexSet::default(),
-            dependencies: Map::default(),
-        }
-    }
-
-    /// Registers the dependencies of a package and version pair.
-    /// Dependencies must be added with a single call to
-    /// [add_dependencies](OfflineDependencyProvider::add_dependencies).
-    /// All subsequent calls to
-    /// [add_dependencies](OfflineDependencyProvider::add_dependencies) for a given
-    /// package version pair will replace the dependencies by the new ones.
-    ///
-    /// The API does not allow to add dependencies one at a time to uphold an assumption that
-    /// [OfflineDependencyProvider.get_dependencies(p, v)](OfflineDependencyProvider::get_dependencies)
-    /// provides all dependencies of a given package (p) and version (v) pair.
-    pub fn add_dependencies<I: IntoIterator<Item = (P, VS)>>(
-        &mut self,
-        package: P,
-        version: impl Into<VS::V>,
-        dependencies: I,
-    ) {
-        let package_deps = dependencies.into_iter().collect::<Vec<_>>();
-
-        self.arena.extend(
-            [package.clone()]
-                .into_iter()
-                .chain(package_deps.iter().map(|(p, _)| p.clone())),
-        );
-
-        *self
-            .dependencies
-            .entry(Package(self.arena.get_index_of(&package).unwrap() as u32))
-            .or_default()
-            .entry(version.into())
-            .or_default() = package_deps
-            .into_iter()
-            .map(|(p, vs)| (Package(self.arena.get_index_of(&p).unwrap() as u32), vs))
-            .collect();
-    }
-
-    /// Lists packages that have been saved.
-    pub fn packages(&self) -> impl Iterator<Item = &P> {
-        self.dependencies
-            .keys()
-            .map(|dep| &self.arena[dep.0 as usize])
-    }
-
-    /// Lists versions of saved packages in sorted order.
-    /// Returns [None] if no information is available regarding that package.
-    pub fn versions(&self, package: &P) -> Option<impl Iterator<Item = &VS::V>> {
-        Some(
-            self.dependencies
-                .get(&Package(self.arena.get_index_of(package)? as u32))?
-                .keys(),
-        )
-    }
-
-    /// Lists dependencies of a given package and version.
-    /// Returns [None] if no information is available regarding that package and version pair.
-    fn dependencies(&self, package: Package, version: &VS::V) -> Option<DependencyConstraints<VS>> {
-        Some(self.dependencies.get(&package)?.get(version)?.clone())
-    }
-}
-
-/// An implementation of [DependencyProvider] that
-/// contains all dependency information available in memory.
-/// Currently packages are picked with the fewest versions contained in the constraints first.
-/// But, that may change in new versions if better heuristics are found.
-/// Versions are picked with the newest versions first.
-impl<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> DependencyProvider
-    for OfflineDependencyProvider<P, VS>
-{
-    type P = P;
-    type V = VS::V;
-    type VS = VS;
-    type M = String;
-
-    type Err = Infallible;
-
-    fn choose_version(
-        &mut self,
-        package: Package,
-        range: &VS,
-    ) -> Result<Option<VS::V>, Infallible> {
-        Ok(self
-            .dependencies
-            .get(&package)
-            .and_then(|versions| versions.keys().rev().find(|v| range.contains(v)).cloned()))
-    }
-
-    type Priority = Reverse<usize>;
-    fn prioritize(&mut self, package: Package, range: &VS) -> Self::Priority {
-        Reverse(
-            self.dependencies
-                .get(&package)
-                .map(|versions| versions.keys().filter(|v| range.contains(v)).count())
-                .unwrap_or(0),
-        )
-    }
-
-    fn get_dependencies(
-        &mut self,
-        package: Package,
-        version: &VS::V,
-    ) -> Result<Dependencies<VS, Self::M>, Infallible> {
-        Ok(match self.dependencies(package, version) {
-            None => {
-                Dependencies::Unavailable("its dependencies could not be determined".to_string())
-            }
-            Some(dependencies) => Dependencies::Available(dependencies),
-        })
-    }
-
-    fn package_to_name(&self, package: Package) -> Option<&Self::P> {
-        self.arena.get_index(package.0 as usize)
-    }
-
-    fn name_to_package(&self, package_name: &Self::P) -> Option<Package> {
-        Some(Package(self.arena.get_index_of(package_name)? as u32))
-    }
+    /// Get a representation of a package version set.
+    fn package_version_set_repr(&self, package: Package, version_set: VersionSet) -> Self::PVS;
 }

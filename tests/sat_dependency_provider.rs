@@ -5,7 +5,7 @@ use std::hash::Hash;
 
 use pubgrub::{
     Dependencies, DependencyProvider, Map, OfflineDependencyProvider, PubGrubError,
-    SelectedDependencies, VersionSet,
+    SelectedDependencies, Version, VersionRange,
 };
 use varisat::ExtendFormula;
 
@@ -38,17 +38,17 @@ fn sat_at_most_one(solver: &mut impl ExtendFormula, vars: &[varisat::Var]) {
 ///
 /// The SAT library does not optimize for the newer version,
 /// so the selected packages may not match the real resolver.
-pub struct SatResolve<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> {
+pub struct SatResolve<P: Debug + Display + Clone + Eq + Hash> {
     solver: varisat::Solver<'static>,
-    all_versions_by_p: Map<P, Vec<(VS::V, varisat::Var)>>,
+    all_versions_by_p: Map<P, Vec<(Version, varisat::Var)>>,
 }
 
-impl<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> SatResolve<P, VS> {
-    pub fn new(dp: &mut OfflineDependencyProvider<P, VS>) -> Self {
+impl<P: Debug + Display + Clone + Eq + Hash> SatResolve<P> {
+    pub fn new<R: VersionRange>(dp: &mut OfflineDependencyProvider<P, R>) -> Self {
         let mut cnf = varisat::CnfFormula::new();
 
         let mut all_versions = vec![];
-        let mut all_versions_by_p: Map<P, Vec<(VS::V, varisat::Var)>> = Map::default();
+        let mut all_versions_by_p: Map<P, Vec<(Version, varisat::Var)>> = Map::default();
 
         for p in dp.packages() {
             let mut versions_for_p = vec![];
@@ -59,7 +59,7 @@ impl<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> SatResolve<P, VS> {
                 all_versions_by_p
                     .entry(p.clone())
                     .or_default()
-                    .push((v.clone(), new_var));
+                    .push((dp.get_package_version(p, v).unwrap(), new_var));
             }
             // no two versions of the same package
             sat_at_most_one(&mut cnf, &versions_for_p);
@@ -68,7 +68,10 @@ impl<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> SatResolve<P, VS> {
         // active packages need each of there `deps` to be satisfied
         for (p, v, var) in &all_versions {
             let deps = match dp
-                .get_dependencies(dp.name_to_package(p).unwrap(), v)
+                .get_dependencies(
+                    dp.name_to_package(p).unwrap(),
+                    dp.get_package_version(p, v).unwrap(),
+                )
                 .unwrap()
             {
                 Dependencies::Unavailable(_) => panic!(),
@@ -80,7 +83,7 @@ impl<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> SatResolve<P, VS> {
                     .get(dp.package_to_name(*p1).unwrap())
                     .unwrap_or(&empty_vec)
                     .iter()
-                    .filter(|(v1, _)| range.contains(v1))
+                    .filter(|&&(v1, _)| range.contains(v1))
                     .map(|(_, var1)| var1.positive())
                     .collect();
                 // ^ the `dep` is satisfied or
@@ -105,9 +108,9 @@ impl<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> SatResolve<P, VS> {
         }
     }
 
-    pub fn resolve(&mut self, name: &P, ver: &VS::V) -> bool {
+    pub fn resolve(&mut self, name: &P, ver: Version) -> bool {
         if let Some(vers) = self.all_versions_by_p.get(name) {
-            if let Some((_, var)) = vers.iter().find(|(v, _)| v == ver) {
+            if let Some((_, var)) = vers.iter().find(|&&(v, _)| v == ver) {
                 self.solver.assume(&[var.positive()]);
 
                 self.solver
@@ -121,7 +124,7 @@ impl<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> SatResolve<P, VS> {
         }
     }
 
-    pub fn is_valid_solution<DP: DependencyProvider<P = P, VS = VS, V = VS::V>>(
+    pub fn is_valid_solution<DP: DependencyProvider<P = P>>(
         &mut self,
         pids: &SelectedDependencies<DP>,
     ) -> bool {
@@ -141,11 +144,11 @@ impl<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> SatResolve<P, VS> {
             .expect("docs say it can't error in default config")
     }
 
-    pub fn check_resolve<DP: DependencyProvider<P = P, VS = VS, V = VS::V>>(
+    pub fn check_resolve<DP: DependencyProvider<P = P>>(
         &mut self,
         res: &Result<SelectedDependencies<DP>, PubGrubError<DP>>,
         p: &P,
-        v: &VS::V,
+        v: Version,
     ) {
         match res {
             Ok(s) => {

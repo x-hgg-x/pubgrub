@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use pubgrub::{
-    resolve, DefaultStringReporter, DependencyProvider, Map, OfflineDependencyProvider,
-    PubGrubError, Range, Reporter as _, SemanticVersion, Set,
+    DefaultStringReporter, DependencyProvider, Map, OfflineDependencyProvider, PubGrubError, Range,
+    Reporter as _, SemanticVersion, Set,
 };
 
 type NumVS = Range<u32>;
@@ -39,13 +39,28 @@ fn no_conflict() {
     dependency_provider.add_dependencies("bar", (2, 0, 0), []);
 
     // Run the algorithm.
-    let computed_solution = resolve(&mut dependency_provider, &"root", (1, 0, 0)).unwrap();
+    let computed_solution = dependency_provider.resolve(&"root", (1, 0, 0)).unwrap();
 
     // Solution.
     let mut expected_solution = Map::default();
-    expected_solution.insert("root", (1, 0, 0).into());
-    expected_solution.insert("foo", (1, 0, 0).into());
-    expected_solution.insert("bar", (1, 0, 0).into());
+    expected_solution.insert(
+        "root",
+        dependency_provider
+            .get_package_version(&"root", &(1, 0, 0).into())
+            .unwrap(),
+    );
+    expected_solution.insert(
+        "foo",
+        dependency_provider
+            .get_package_version(&"foo", &(1, 0, 0).into())
+            .unwrap(),
+    );
+    expected_solution.insert(
+        "bar",
+        dependency_provider
+            .get_package_version(&"bar", &(1, 0, 0).into())
+            .unwrap(),
+    );
 
     // Comparing the true solution with the one computed by the algorithm.
     assert_eq!(expected_solution, computed_solution);
@@ -75,13 +90,28 @@ fn avoiding_conflict_during_decision_making() {
     dependency_provider.add_dependencies("bar", (2, 0, 0), []);
 
     // Run the algorithm.
-    let computed_solution = resolve(&mut dependency_provider, &"root", (1, 0, 0)).unwrap();
+    let computed_solution = dependency_provider.resolve(&"root", (1, 0, 0)).unwrap();
 
     // Solution.
     let mut expected_solution = Map::default();
-    expected_solution.insert("root", (1, 0, 0).into());
-    expected_solution.insert("foo", (1, 0, 0).into());
-    expected_solution.insert("bar", (1, 1, 0).into());
+    expected_solution.insert(
+        "root",
+        dependency_provider
+            .get_package_version(&"root", &(1, 0, 0).into())
+            .unwrap(),
+    );
+    expected_solution.insert(
+        "foo",
+        dependency_provider
+            .get_package_version(&"foo", &(1, 0, 0).into())
+            .unwrap(),
+    );
+    expected_solution.insert(
+        "bar",
+        dependency_provider
+            .get_package_version(&"bar", &(1, 1, 0).into())
+            .unwrap(),
+    );
 
     // Comparing the true solution with the one computed by the algorithm.
     assert_eq!(expected_solution, computed_solution);
@@ -110,12 +140,22 @@ fn conflict_resolution() {
     );
 
     // Run the algorithm.
-    let computed_solution = resolve(&mut dependency_provider, &"root", (1, 0, 0)).unwrap();
+    let computed_solution = dependency_provider.resolve(&"root", (1, 0, 0)).unwrap();
 
     // Solution.
     let mut expected_solution = Map::default();
-    expected_solution.insert("root", (1, 0, 0).into());
-    expected_solution.insert("foo", (1, 0, 0).into());
+    expected_solution.insert(
+        "root",
+        dependency_provider
+            .get_package_version(&"root", &(1, 0, 0).into())
+            .unwrap(),
+    );
+    expected_solution.insert(
+        "foo",
+        dependency_provider
+            .get_package_version(&"foo", &(1, 0, 0).into())
+            .unwrap(),
+    );
 
     // Comparing the true solution with the one computed by the algorithm.
     assert_eq!(expected_solution, computed_solution);
@@ -168,13 +208,28 @@ fn conflict_with_partial_satisfier() {
     dependency_provider.add_dependencies("target", (1, 0, 0), []);
 
     // Run the algorithm.
-    let computed_solution = resolve(&mut dependency_provider, &"root", (1, 0, 0)).unwrap();
+    let computed_solution = dependency_provider.resolve(&"root", (1, 0, 0)).unwrap();
 
     // Solution.
     let mut expected_solution = Map::default();
-    expected_solution.insert("root", (1, 0, 0).into());
-    expected_solution.insert("foo", (1, 0, 0).into());
-    expected_solution.insert("target", (2, 0, 0).into());
+    expected_solution.insert(
+        "root",
+        dependency_provider
+            .get_package_version(&"root", &(1, 0, 0).into())
+            .unwrap(),
+    );
+    expected_solution.insert(
+        "foo",
+        dependency_provider
+            .get_package_version(&"foo", &(1, 0, 0).into())
+            .unwrap(),
+    );
+    expected_solution.insert(
+        "target",
+        dependency_provider
+            .get_package_version(&"target", &(2, 0, 0).into())
+            .unwrap(),
+    );
 
     // Comparing the true solution with the one computed by the algorithm.
     assert_eq!(expected_solution, computed_solution);
@@ -201,13 +256,33 @@ fn double_choices() {
 
     // Solution.
     let mut expected_solution = Map::default();
-    expected_solution.insert("a", 0u32);
-    expected_solution.insert("b", 0u32);
-    expected_solution.insert("c", 0u32);
-    expected_solution.insert("d", 0u32);
+    expected_solution.insert(
+        "a",
+        dependency_provider
+            .get_package_version(&"a", &0u32)
+            .unwrap(),
+    );
+    expected_solution.insert(
+        "b",
+        dependency_provider
+            .get_package_version(&"b", &0u32)
+            .unwrap(),
+    );
+    expected_solution.insert(
+        "c",
+        dependency_provider
+            .get_package_version(&"c", &0u32)
+            .unwrap(),
+    );
+    expected_solution.insert(
+        "d",
+        dependency_provider
+            .get_package_version(&"d", &0u32)
+            .unwrap(),
+    );
 
     // Run the algorithm.
-    let computed_solution = resolve(&mut dependency_provider, &"a", 0u32).unwrap();
+    let computed_solution = dependency_provider.resolve(&"a", 0u32).unwrap();
     assert_eq!(expected_solution, computed_solution);
 }
 
@@ -231,19 +306,18 @@ fn confusing_with_lots_of_holes() {
     dependency_provider.add_dependencies("baz", 1u32, vec![]);
 
     let Err(PubGrubError::NoSolution(mut derivation_tree)) =
-        resolve(&mut dependency_provider, &"root", 1u32)
+        dependency_provider.resolve(&"root", 1u32)
     else {
         unreachable!()
     };
     assert_eq!(
         &DefaultStringReporter::report(&derivation_tree, &dependency_provider),
-        r#"Because there is no available version for bar and foo 1 | 2 | 3 | 4 | 5 depends on bar, foo 1 | 2 | 3 | 4 | 5 is forbidden.
-And because there is no version of foo in <1 | >1, <2 | >2, <3 | >3, <4 | >4, <5 | >5 and root 1 depends on foo, root 1 is forbidden."#
+        r#"Because foo @ * depends on bar @ ∅ and root @ 1 depends on foo @ *, root @ 1 is forbidden."#
     );
     derivation_tree.collapse_no_versions();
     assert_eq!(
         &DefaultStringReporter::report(&derivation_tree, &dependency_provider),
-        "Because foo depends on bar and root 1 depends on foo, root 1 is forbidden."
+        "Because foo @ * depends on bar @ ∅ and root @ 1 depends on foo @ *, root @ 1 is forbidden."
     );
     assert_eq!(
         derivation_tree.packages(),

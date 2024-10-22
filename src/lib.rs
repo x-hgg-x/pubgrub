@@ -56,7 +56,7 @@
 //! dependency_provider.add_dependencies("icons", 1u32, []);
 //!
 //! // Run the algorithm.
-//! let solution = resolve(&mut dependency_provider, &"root", 1u32).unwrap();
+//! let solution = dependency_provider.resolve(&"root", 1u32).unwrap();
 //! ```
 //!
 //! # DependencyProvider trait
@@ -71,37 +71,35 @@
 //! and [SemanticVersion] for versions.
 //! This may be done quite easily by implementing the following functions.
 //! ```
-//! # use pubgrub::{DependencyProvider, Dependencies, SemanticVersion,Range, DependencyConstraints, Map, Package};
+//! # use pubgrub::{DependencyProvider, Dependencies, Range, DependencyConstraints, Map, Package, Version, VersionSet};
 //! # use std::error::Error;
 //! # use std::borrow::Borrow;
 //! # use std::convert::Infallible;
 //! #
 //! # struct MyDependencyProvider;
 //! #
-//! type SemVS = Range<SemanticVersion>;
-//!
 //! impl DependencyProvider for MyDependencyProvider {
-//!     fn choose_version(&mut self, package: Package, range: &SemVS) -> Result<Option<SemanticVersion>, Infallible> {
+//!     fn choose_version(&mut self, package: Package, range: VersionSet) -> Result<Option<Version>, Infallible> {
 //!         unimplemented!()
 //!     }
 //!
 //!     type Priority = usize;
-//!     fn prioritize(&mut self, package: Package, range: &SemVS) -> Self::Priority {
+//!     fn prioritize(&mut self, package: Package, range: VersionSet) -> Self::Priority {
 //!         unimplemented!()
 //!     }
 //!
 //!     fn get_dependencies(
 //!         &mut self,
 //!         package: Package,
-//!         version: &SemanticVersion,
-//!     ) -> Result<Dependencies<SemVS, Self::M>, Infallible> {
+//!         version: Version,
+//!     ) -> Result<Dependencies<Self::M>, Infallible> {
 //!         Ok(Dependencies::Available(DependencyConstraints::default()))
 //!     }
 //!
 //!     type Err = Infallible;
 //!     type P = String;
-//!     type V = SemanticVersion;
-//!     type VS = SemVS;
+//!     type PV = String;
+//!     type PVS = String;
 //!     type M = String;
 //!
 //!     fn package_to_name(&self, package: Package) -> Option<&Self::P> {
@@ -109,6 +107,14 @@
 //!     }
 //!
 //!     fn name_to_package(&self, package_name: &Self::P) -> Option<Package> {
+//!         unimplemented!()
+//!     }
+//!
+//!     fn package_version_repr(&self, package: Package, version: Version) -> Self::PV {
+//!         unimplemented!()
+//!     }
+//!
+//!     fn package_version_set_repr(&self, package: Package, version_set: VersionSet) -> Self::PVS {
 //!         unimplemented!()
 //!     }
 //! }
@@ -164,22 +170,22 @@
 //!
 //! This crate defines the following [Reporter] trait:
 //! ```
-//! # use pubgrub::{Package, VersionSet, DerivationTree, DependencyProvider, ReportFormatter};
+//! # use pubgrub::{Package, DerivationTree, DependencyProvider, ReportFormatter};
 //! # use std::fmt::{Debug, Display};
 //! #
-//! pub trait Reporter<DP: DependencyProvider, VS: VersionSet, M: Clone + Debug + Display> {
+//! pub trait Reporter<DP: DependencyProvider, M: Clone + Debug + Display> {
 //!     /// Output type of the report.
 //!     type Output;
 //!
 //!     /// Generate a report from the derivation tree
 //!     /// describing the resolution failure using the default formatter.
-//!     fn report(derivation_tree: &DerivationTree<VS, M>, dependency_provider: &DP) -> Self::Output;
+//!     fn report(derivation_tree: &DerivationTree<M>, dependency_provider: &DP) -> Self::Output;
 //!
 //!     /// Generate a report from the derivation tree
 //!     /// describing the resolution failure using a custom formatter.
 //!     fn report_with_formatter(
-//!         derivation_tree: &DerivationTree<VS, M>,
-//!         formatter: &impl ReportFormatter<DP, VS, M, Output = Self::Output>,
+//!         derivation_tree: &DerivationTree<M>,
+//!         formatter: &impl ReportFormatter<DP, M, Output = Self::Output>,
 //!         dependency_provider: &DP,
 //!     ) -> Self::Output;
 //! }
@@ -199,7 +205,7 @@
 //! # let root_package = "root";
 //! # let root_version = 1u32;
 //! #
-//! match resolve(&mut dependency_provider, &root_package, root_version) {
+//! match dependency_provider.resolve(&root_package, root_version) {
 //!     Ok(solution) => println!("{:?}", solution),
 //!     Err(PubGrubError::NoSolution(mut derivation_tree)) => {
 //!         derivation_tree.collapse_no_versions();
@@ -230,26 +236,28 @@
 #![warn(missing_docs)]
 
 mod error;
+mod provider;
 mod range;
 mod report;
+mod semantic;
 mod solver;
 mod term;
 mod type_aliases;
 mod version;
-mod version_set;
 
 pub use error::{NoSolutionError, PubGrubError};
+pub use provider::{OfflineDependencyProvider, VersionRange};
 pub use range::Range;
 pub use report::{
     DefaultStringReportFormatter, DefaultStringReporter, DerivationTree, Derived, External,
     ReportFormatter, Reporter,
 };
-pub use solver::{resolve, Dependencies, DependencyProvider, OfflineDependencyProvider};
+pub use semantic::SemanticVersion;
+pub use solver::{resolve, Dependencies, DependencyProvider};
 pub use term::Term;
 pub use type_aliases::{
     DependencyConstraints, FnvIndexMap, FnvIndexSet, Map, Package, SelectedDependencies, Set,
 };
-pub use version::{SemanticVersion, VersionParseError};
-pub use version_set::VersionSet;
+pub use version::{Version, VersionSet};
 
 mod internal;
