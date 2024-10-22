@@ -10,14 +10,15 @@ use crate::{
         Arena, DecisionLevel, IncompDpId, Incompatibility, PartialSolution, Relation,
         SatisfierSearch, SmallVec,
     },
-    DependencyProvider, DerivationTree, Map, PackageArena, PackageId, Set, VersionSet,
+    DependencyProvider, DerivationTree, Map, PackageArena, PackageId, Set, Term, VersionIndex,
+    VersionSet,
 };
 
 /// Current state of the PubGrub algorithm.
 #[derive(Clone)]
 pub(crate) struct State<DP: DependencyProvider> {
     root_package_id: PackageId,
-    root_version: DP::V,
+    root_version_index: VersionIndex,
 
     #[allow(clippy::type_complexity)]
     incompatibilities: Map<PackageId, Vec<IncompDpId<DP>>>,
@@ -37,7 +38,7 @@ pub(crate) struct State<DP: DependencyProvider> {
     pub(crate) partial_solution: PartialSolution<DP>,
 
     /// The store is the reference storage for all incompatibilities.
-    pub(crate) incompatibility_store: Arena<Incompatibility<DP::VS, DP::M>>,
+    pub(crate) incompatibility_store: Arena<Incompatibility<DP::M>>,
 
     /// This is a stack of work to be done in `unit_propagation`.
     /// It can definitely be a local variable to that method, but
@@ -47,17 +48,17 @@ pub(crate) struct State<DP: DependencyProvider> {
 
 impl<DP: DependencyProvider> State<DP> {
     /// Initialization of PubGrub state.
-    pub(crate) fn init(root_package_id: PackageId, root_version: DP::V) -> Self {
+    pub(crate) fn init(root_package_id: PackageId, root_version_index: VersionIndex) -> Self {
         let mut incompatibility_store = Arena::new();
         let not_root_id = incompatibility_store.alloc(Incompatibility::not_root(
             root_package_id,
-            root_version.clone(),
+            root_version_index,
         ));
         let mut incompatibilities = Map::default();
         incompatibilities.insert(root_package_id, vec![not_root_id]);
         Self {
             root_package_id,
-            root_version,
+            root_version_index,
             incompatibilities,
             contradicted_incompatibilities: Map::default(),
             partial_solution: PartialSolution::empty(),
@@ -68,7 +69,7 @@ impl<DP: DependencyProvider> State<DP> {
     }
 
     /// Add an incompatibility to the state.
-    pub(crate) fn add_incompatibility(&mut self, incompat: Incompatibility<DP::VS, DP::M>) {
+    pub(crate) fn add_incompatibility(&mut self, incompat: Incompatibility<DP::M>) {
         let id = self.incompatibility_store.alloc(incompat);
         self.merge_incompatibility(id);
     }
@@ -78,19 +79,15 @@ impl<DP: DependencyProvider> State<DP> {
     pub(crate) fn add_incompatibility_from_dependencies(
         &mut self,
         package_id: PackageId,
-        version: DP::V,
-        deps: impl IntoIterator<Item = (PackageId, DP::VS)>,
+        version_index: VersionIndex,
+        deps: impl IntoIterator<Item = (PackageId, VersionSet)>,
     ) -> std::ops::Range<IncompDpId<DP>> {
         // Create incompatibilities and allocate them in the store.
-        let new_incompats_id_range =
-            self.incompatibility_store
-                .alloc_iter(deps.into_iter().map(|dep| {
-                    Incompatibility::from_dependency(
-                        package_id,
-                        <DP::VS as VersionSet>::singleton(version.clone()),
-                        dep,
-                    )
-                }));
+        let vs = VersionSet::singleton(version_index);
+        let new_incompats_id_range = self.incompatibility_store.alloc_iter(
+            deps.into_iter()
+                .map(|dep| Incompatibility::from_dependency(package_id, vs, dep)),
+        );
         // Merge the newly created incompatibilities with the older ones.
         for id in IncompDpId::<DP>::range_to_iter(new_incompats_id_range.clone()) {
             self.merge_incompatibility(id);
@@ -105,7 +102,8 @@ impl<DP: DependencyProvider> State<DP> {
         &mut self,
         package_id: PackageId,
         package_store: &PackageArena<DP::P>,
-    ) -> Result<(), DerivationTree<DP::VS, DP::M>> {
+        dependency_provider: &DP,
+    ) -> Result<(), DerivationTree<DP::M>> {
         self.unit_propagation_buffer.clear();
         self.unit_propagation_buffer.push(package_id);
         while let Some(current_package) = self.unit_propagation_buffer.pop() {
@@ -127,7 +125,7 @@ impl<DP: DependencyProvider> State<DP> {
                     Relation::Satisfied => {
                         log::info!(
                             "Start conflict resolution because incompat satisfied:\n   {}",
-                            current_incompat.display::<DP>(package_store)
+                            current_incompat.display(package_store, dependency_provider)
                         );
                         conflict_id = Some(incompat_id);
                         break;
@@ -159,7 +157,7 @@ impl<DP: DependencyProvider> State<DP> {
             }
             if let Some(incompat_id) = conflict_id {
                 let (package_almost, root_cause) = self
-                    .conflict_resolution(incompat_id, package_store)
+                    .conflict_resolution(incompat_id, package_store, dependency_provider)
                     .map_err(|terminal_incompat_id| {
                         self.build_derivation_tree(terminal_incompat_id)
                     })?;
@@ -189,12 +187,13 @@ impl<DP: DependencyProvider> State<DP> {
         &mut self,
         incompatibility: IncompDpId<DP>,
         package_store: &PackageArena<DP::P>,
+        dependency_provider: &DP,
     ) -> Result<(PackageId, IncompDpId<DP>), IncompDpId<DP>> {
         let mut current_incompat_id = incompatibility;
         let mut current_incompat_changed = false;
         loop {
             if self.incompatibility_store[current_incompat_id]
-                .is_terminal(self.root_package_id, &self.root_version)
+                .is_terminal(self.root_package_id, self.root_version_index)
             {
                 return Err(current_incompat_id);
             }
@@ -223,7 +222,10 @@ impl<DP: DependencyProvider> State<DP> {
                         package_id,
                         &self.incompatibility_store,
                     );
-                    log::info!("prior cause: {}", prior_cause.display::<DP>(package_store));
+                    log::info!(
+                        "prior cause: {}",
+                        prior_cause.display(package_store, dependency_provider)
+                    );
                     current_incompat_id = self.incompatibility_store.alloc(prior_cause);
                     current_incompat_changed = true;
                 }
@@ -286,7 +288,7 @@ impl<DP: DependencyProvider> State<DP> {
         }
         for (package_id, term) in self.incompatibility_store[id].iter() {
             if cfg!(debug_assertions) {
-                assert_ne!(term, &crate::term::Term::any());
+                assert_ne!(term, Term::any());
             }
             self.incompatibilities
                 .entry(package_id)
@@ -297,7 +299,7 @@ impl<DP: DependencyProvider> State<DP> {
 
     // Error reporting #########################################################
 
-    fn build_derivation_tree(&self, incompat: IncompDpId<DP>) -> DerivationTree<DP::VS, DP::M> {
+    fn build_derivation_tree(&self, incompat: IncompDpId<DP>) -> DerivationTree<DP::M> {
         let mut all_ids: Set<IncompDpId<DP>> = Set::default();
         let mut shared_ids = Set::default();
         let mut stack = vec![incompat];

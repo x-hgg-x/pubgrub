@@ -37,7 +37,7 @@
 //! #     let mut dependency_provider = OfflineDependencyProvider::<&str, NumVS>::new();
 //! #     let package = "root";
 //! #     let version = 1u32;
-//! let solution = resolve(&mut dependency_provider, &package, version)?;
+//! let solution = dependency_provider.resolve(&package, version)?;
 //! #     Ok(())
 //! # }
 //! # fn main() {
@@ -63,7 +63,7 @@ use log::{debug, info};
 use crate::{
     internal::{Incompatibility, State},
     DependencyConstraints, DerivationTree, External, Map, NoSolutionError, PackageArena, PackageId,
-    PubGrubError, SelectedDependencies, VersionSet,
+    PubGrubError, SelectedDependencies, VersionIndex, VersionSet,
 };
 
 /// Main function of the library.
@@ -72,12 +72,12 @@ use crate::{
 pub fn resolve<DP: DependencyProvider>(
     dependency_provider: &mut DP,
     package: DP::P,
-    version: impl Into<DP::V>,
+    version_index: VersionIndex,
 ) -> Result<SelectedDependencies<DP>, PubGrubError<DP>> {
     let mut package_store = PackageArena::new();
     let package_id = package_store.insert(package);
-    let mut state: State<DP> = State::init(package_id, version.into());
-    let mut added_dependencies: Map<PackageId, BTreeSet<DP::V>> = Map::default();
+    let mut state: State<DP> = State::init(package_id, version_index);
+    let mut added_dependencies: Map<PackageId, BTreeSet<VersionIndex>> = Map::default();
     let mut next = package_id;
     loop {
         dependency_provider
@@ -85,7 +85,7 @@ pub fn resolve<DP: DependencyProvider>(
             .map_err(PubGrubError::ErrorInShouldCancel)?;
 
         info!("unit_propagation: {}", package_store.pkg(next).unwrap());
-        match state.unit_propagation(next, &package_store) {
+        match state.unit_propagation(next, &package_store, dependency_provider) {
             Ok(t) => t,
             Err(DerivationTree::External(External::NoVersions(PackageId(0), _))) => {
                 return Err(PubGrubError::NoRoot);
@@ -124,107 +124,92 @@ pub fn resolve<DP: DependencyProvider>(
             .choose_version(next, term_intersection.unwrap_positive(), &package_store)
             .map_err(PubGrubError::ErrorChoosingPackageVersion)?;
 
-        info!(
-            "DP chose: {} @ {decision:?}",
-            package_store.pkg(next).unwrap()
-        );
-
         // Pick the next compatible version.
         let v = match decision {
             None => {
-                let inc = Incompatibility::no_versions(next, term_intersection.clone());
+                info!(
+                    "DP chose: {} (no versions)",
+                    package_store.pkg(next).unwrap()
+                );
+                let inc = Incompatibility::no_versions(next, term_intersection);
                 state.add_incompatibility(inc);
                 continue;
             }
-            Some(x) => x,
+            Some(v) => {
+                info!(
+                    "DP chose: {}",
+                    dependency_provider
+                        .package_version_display(package_store.pkg(next).unwrap(), v)
+                );
+                v
+            }
         };
 
-        if !term_intersection.contains(&v) {
+        if !term_intersection.contains(v) {
             return Err(PubGrubError::Failure(
                 "choose_package_version picked an incompatible version".into(),
             ));
         }
 
-        let is_new_dependency = added_dependencies
-            .entry(next)
-            .or_default()
-            .insert(v.clone());
+        let is_new_dependency = added_dependencies.entry(next).or_default().insert(v);
 
         if is_new_dependency {
             // Retrieve that package dependencies.
             let pid = next;
-            let dependencies: Dependencies<
-                <DP as DependencyProvider>::VS,
-                <DP as DependencyProvider>::M,
-            > = dependency_provider
-                .get_dependencies(pid, &v, &mut package_store)
+            let dependencies = dependency_provider
+                .get_dependencies(pid, v, &mut package_store)
                 .map_err(|err| PubGrubError::ErrorRetrievingDependencies {
-                    package: package_store.pkg(pid).unwrap().clone(),
-                    version: v.clone(),
+                    package_version: dependency_provider
+                        .package_version_display(package_store.pkg(pid).unwrap(), v)
+                        .to_string(),
                     source: err,
                 })?;
 
             let dependencies = match dependencies {
                 Dependencies::Unavailable(reason) => {
-                    state.add_incompatibility(Incompatibility::custom_version(
-                        pid,
-                        v.clone(),
-                        reason,
-                    ));
+                    state.add_incompatibility(Incompatibility::custom_version(pid, v, reason));
                     continue;
                 }
                 Dependencies::Available(x) => x,
             };
 
             // Add that package and version if the dependencies are not problematic.
-            let dep_incompats =
-                state.add_incompatibility_from_dependencies(pid, v.clone(), dependencies);
+            let dep_incompats = state.add_incompatibility_from_dependencies(pid, v, dependencies);
 
             state.partial_solution.add_version(
                 pid,
-                v.clone(),
+                v,
                 dep_incompats,
                 &state.incompatibility_store,
                 &package_store,
+                dependency_provider,
             );
         } else {
             // `dep_incompats` are already in `incompatibilities` so we know there are not satisfied
             // terms and can add the decision directly.
             info!(
-                "add_decision (not first time): {} @ {}",
-                package_store.pkg(next).unwrap(),
-                v
+                "add_decision (not first time): {}",
+                dependency_provider.package_version_display(package_store.pkg(next).unwrap(), v)
             );
-            state.partial_solution.add_decision(next, v, &package_store);
+            state.partial_solution.add_decision(next, v);
         }
     }
 }
 
 /// An enum used by [DependencyProvider] that holds information about package dependencies.
 #[derive(Clone)]
-pub enum Dependencies<VS: VersionSet, M: Eq + Clone + Debug + Display> {
+pub enum Dependencies<M: Eq + Clone + Debug + Display> {
     /// Package dependencies are unavailable with the reason why they are missing.
     Unavailable(M),
     /// Container for all available package versions.
-    Available(DependencyConstraints<VS>),
+    Available(DependencyConstraints),
 }
 
 /// Trait that allows the algorithm to retrieve available packages and their dependencies.
 /// An implementor needs to be supplied to the [resolve] function.
 pub trait DependencyProvider {
     /// How this provider stores the name of the packages.
-    type P: Debug + Display + Clone + Eq + Hash;
-
-    /// How this provider stores the versions of the packages.
-    ///
-    /// A common choice is [`SemanticVersion`][crate::version::SemanticVersion].
-    type V: Debug + Display + Clone + Ord;
-
-    /// How this provider stores the version requirements for the packages.
-    /// The requirements must be able to process the same kind of version as this dependency provider.
-    ///
-    /// A common choice is [`Ranges`][version_ranges::Ranges].
-    type VS: VersionSet<V = Self::V>;
+    type P: Debug + Display + Eq + Hash;
 
     /// Type for custom incompatibilities.
     ///
@@ -267,7 +252,7 @@ pub trait DependencyProvider {
     fn prioritize(
         &mut self,
         package_id: PackageId,
-        range: &Self::VS,
+        set: VersionSet,
         package_store: &PackageArena<Self::P>,
     ) -> Self::Priority;
     /// The type returned from `prioritize`. The resolver does not care what type this is
@@ -288,9 +273,9 @@ pub trait DependencyProvider {
     fn choose_version(
         &mut self,
         package_id: PackageId,
-        range: &Self::VS,
+        set: VersionSet,
         package_store: &PackageArena<Self::P>,
-    ) -> Result<Option<Self::V>, Self::Err>;
+    ) -> Result<Option<VersionIndex>, Self::Err>;
 
     /// Retrieves the package dependencies.
     /// Return [Dependencies::Unavailable] if its dependencies are unavailable.
@@ -298,9 +283,9 @@ pub trait DependencyProvider {
     fn get_dependencies(
         &mut self,
         package_id: PackageId,
-        version: &Self::V,
+        version_index: VersionIndex,
         package_store: &mut PackageArena<Self::P>,
-    ) -> Result<Dependencies<Self::VS, Self::M>, Self::Err>;
+    ) -> Result<Dependencies<Self::M>, Self::Err>;
 
     /// This is called fairly regularly during the resolution,
     /// if it returns an Err then resolution will be terminated.
@@ -310,4 +295,18 @@ pub trait DependencyProvider {
     fn should_cancel(&mut self) -> Result<(), Self::Err> {
         Ok(())
     }
+
+    /// Get a representation of a package version.
+    fn package_version_display<'a>(
+        &'a self,
+        package: &'a Self::P,
+        version_index: VersionIndex,
+    ) -> impl Display + 'a;
+
+    /// Get a representation of a package version set.
+    fn package_version_set_display<'a>(
+        &'a self,
+        package: &'a Self::P,
+        version_set: VersionSet,
+    ) -> impl Display + 'a;
 }

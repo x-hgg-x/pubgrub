@@ -12,7 +12,7 @@ pub struct NoSolutionError<DP: DependencyProvider> {
     /// Package store
     pub package_store: PackageArena<DP::P>,
     /// Derivate tree
-    pub derivation_tree: DerivationTree<DP::VS, DP::M>,
+    pub derivation_tree: DerivationTree<DP::M>,
 }
 
 /// Errors that may occur while solving dependencies.
@@ -28,12 +28,10 @@ pub enum PubGrubError<DP: DependencyProvider> {
 
     /// Error arising when the implementer of [DependencyProvider] returned an error in the method
     /// [get_dependencies](DependencyProvider::get_dependencies).
-    #[error("Retrieving dependencies of {package} {version} failed")]
+    #[error("Retrieving dependencies of {package_version} failed")]
     ErrorRetrievingDependencies {
-        /// Package whose dependencies we want.
-        package: DP::P,
-        /// Version of the package for which we want the dependencies.
-        version: DP::V,
+        /// Represenatation of package and version whose dependencies we want.
+        package_version: String,
         /// Error raised by the implementer of
         /// [DependencyProvider].
         source: DP::Err,
@@ -73,13 +71,11 @@ where
                 .field("derivation_tree", &err.derivation_tree)
                 .finish(),
             Self::ErrorRetrievingDependencies {
-                package,
-                version,
+                package_version,
                 source,
             } => f
                 .debug_struct("ErrorRetrievingDependencies")
-                .field("package", package)
-                .field("version", version)
+                .field("package_version", package_version)
                 .field("source", source)
                 .finish(),
             Self::ErrorChoosingPackageVersion(arg0) => f

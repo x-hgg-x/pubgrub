@@ -7,7 +7,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use criterion::*;
-use pubgrub::{resolve, OfflineDependencyProvider, Range};
+use pubgrub::{OfflineDependencyProvider, Range};
 use version_ranges::Ranges;
 
 /// The size of a box in the board.
@@ -122,11 +122,7 @@ fn solve(c: &mut Criterion, board: Vec<(SudokuPackage, Ranges<Arc<usize>>)>, cas
     dependency_provider.add_dependencies(SudokuPackage::Root, Arc::new(1usize), board);
     c.bench_function(case, |b| {
         b.iter(|| {
-            let _ = resolve(
-                &mut dependency_provider,
-                SudokuPackage::Root,
-                Arc::new(1usize),
-            );
+            let _ = dependency_provider.resolve(SudokuPackage::Root, Arc::new(1usize));
         })
     });
 }
