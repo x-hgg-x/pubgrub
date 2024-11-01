@@ -15,9 +15,12 @@ use crate::{
 };
 
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[repr(transparent)]
 pub(crate) struct DecisionLevel(u32);
 
 impl DecisionLevel {
+    pub(crate) const MAX: Self = Self(u32::MAX);
+
     fn increment(self) -> Self {
         Self(self.0 + 1)
     }
@@ -41,12 +44,12 @@ pub(crate) struct PartialSolution<DP: DependencyProvider> {
     ///    did not have a change. Within this range there is no sorting.
     #[allow(clippy::type_complexity)]
     package_assignments: FxIndexMap<PackageId, PackageAssignments<DP::M>>,
-    /// `prioritized_potential_packages` is primarily a HashMap from a package with no desition and a positive assignment
+    /// `prioritized_potential_packages` is primarily a HashMap from a package with no decision and a positive assignment
     /// to its `Priority`. But, it also maintains a max heap of packages by `Priority` order.
     prioritized_potential_packages:
         PriorityQueue<PackageId, DP::Priority, BuildHasherDefault<FxHasher>>,
     changed_this_decision_level: usize,
-    has_ever_backtracked: bool,
+    last_valid_decision_levels: Vec<DecisionLevel>,
 }
 
 impl<DP: DependencyProvider> PartialSolution<DP> {
@@ -169,8 +172,21 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
             package_assignments: FxIndexMap::default(),
             prioritized_potential_packages: PriorityQueue::default(),
             changed_this_decision_level: 0,
-            has_ever_backtracked: false,
+            last_valid_decision_levels: vec![DecisionLevel(0)],
         }
+    }
+
+    /// Check if an incompatibility is contradicted.
+    pub(crate) fn is_contradicted(&self, incompat: &Incompatibility<DP::M>) -> bool {
+        incompat.is_contradicted(&self.last_valid_decision_levels)
+    }
+
+    /// Contradict an incompatibility.
+    pub(crate) fn contradict(&self, incompat: &mut Incompatibility<DP::M>) {
+        incompat.set_contradication_info(
+            self.current_decision_level,
+            self.last_valid_decision_levels.len() as u32,
+        );
     }
 
     /// Add a decision.
@@ -222,14 +238,14 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
         &mut self,
         package_id: PackageId,
         cause: IncompDpId<DP>,
-        store: &Arena<Incompatibility<DP::M>>,
+        incompat_term: Term,
     ) {
         use indexmap::map::Entry;
         let mut dated_derivation = DatedDerivation {
             global_index: self.next_global_index,
             decision_level: self.current_decision_level,
             cause,
-            accumulated_intersection: store[cause].get(package_id).unwrap().negate(),
+            accumulated_intersection: incompat_term.negate(),
         };
         self.next_global_index += 1;
         let pa_last_index = self.package_assignments.len().saturating_sub(1);
@@ -366,7 +382,16 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
         // Throw away all stored priority levels, And mark that they all need to be recomputed.
         self.prioritized_potential_packages.clear();
         self.changed_this_decision_level = self.current_decision_level.0.saturating_sub(1) as usize;
-        self.has_ever_backtracked = true;
+
+        // Update list of last valid contradicted decision levels
+        self.last_valid_decision_levels
+            .push(DecisionLevel(u32::MAX));
+
+        let index = self
+            .last_valid_decision_levels
+            .partition_point(|&l| l <= decision_level);
+
+        self.last_valid_decision_levels[index..].fill(decision_level);
     }
 
     /// We can add the version to the partial solution as a decision
@@ -383,7 +408,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
         package_store: &PackageArena<DP::P>,
         dependency_provider: &DP,
     ) {
-        if !self.has_ever_backtracked {
+        if self.last_valid_decision_levels.len() == 1 {
             // Nothing has yet gone wrong during this resolution. This call is unlikely to be the first problem.
             // So let's live with a little bit of risk and add the decision without checking the dependencies.
             // The worst that can happen is we will have to do a full backtrack which only removes this one decision.
@@ -545,10 +570,6 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
             .max_by_key(|(_p, (_, global_index, _))| global_index)
             .unwrap();
         decision_level.max(DecisionLevel(1))
-    }
-
-    pub(crate) fn current_decision_level(&self) -> DecisionLevel {
-        self.current_decision_level
     }
 }
 

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::ops::{Index, Range};
+use std::ops::{Index, IndexMut, Range};
 
 /// The index of a value allocated in an arena that holds `T`s.
 ///
@@ -118,9 +118,21 @@ impl<T> Index<Id<T>> for Arena<T> {
     }
 }
 
+impl<T> IndexMut<Id<T>> for Arena<T> {
+    fn index_mut(&mut self, id: Id<T>) -> &mut Self::Output {
+        &mut self.data[id.raw as usize]
+    }
+}
+
 impl<T> Index<Range<Id<T>>> for Arena<T> {
     type Output = [T];
     fn index(&self, id: Range<Id<T>>) -> &[T] {
         &self.data[(id.start.raw as usize)..(id.end.raw as usize)]
+    }
+}
+
+impl<T> IndexMut<Range<Id<T>>> for Arena<T> {
+    fn index_mut(&mut self, id: Range<Id<T>>) -> &mut Self::Output {
+        &mut self.data[(id.start.raw as usize)..(id.end.raw as usize)]
     }
 }

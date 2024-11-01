@@ -7,10 +7,45 @@ use std::fmt::{self, Debug, Display};
 use std::sync::Arc;
 
 use crate::{
-    internal::{Arena, Id, SmallMap},
+    internal::{Arena, DecisionLevel, Id, SmallMap},
     term, DefaultStringReportFormatter, DependencyProvider, DerivationTree, Derived, External, Map,
     PackageArena, PackageId, ReportFormatter, Set, Term, VersionIndex, VersionSet,
 };
+
+#[derive(Debug, Clone)]
+struct ContradicationInfo {
+    /// Store the decision level when the incompatibility was found to be contradicted.
+    /// These will stay contradicted until we have backtracked beyond its associated decision level.
+    decision_level: DecisionLevel,
+    /// Store the backtrack generation for the decision level.
+    backtrack_generation: u32,
+}
+
+impl ContradicationInfo {
+    /// Construct a new value.
+    fn new(decision_level: DecisionLevel, backtrack_generation: u32) -> Self {
+        Self {
+            decision_level,
+            backtrack_generation,
+        }
+    }
+
+    /// Construct a value interpreted as not contradicted.
+    fn not_contradicted() -> Self {
+        Self {
+            decision_level: DecisionLevel::MAX,
+            backtrack_generation: 0,
+        }
+    }
+
+    /// Check for contradiction.
+    fn is_contradicted(&self, last_valid_decision_levels: &[DecisionLevel]) -> bool {
+        last_valid_decision_levels
+            .get(self.backtrack_generation as usize)
+            .map(|&l| self.decision_level <= l)
+            .unwrap_or(true)
+    }
+}
 
 /// An incompatibility is a set of terms for different packages
 /// that should never be satisfied all together.
@@ -31,6 +66,7 @@ use crate::{
 pub(crate) struct Incompatibility<M: Eq + Clone + Debug + Display> {
     package_terms: SmallMap<PackageId, Term>,
     kind: Kind<M>,
+    contradiction_info: ContradicationInfo,
 }
 
 /// Type alias of unique identifiers for incompatibilities.
@@ -96,6 +132,7 @@ impl<M: Eq + Clone + Debug + Display> Incompatibility<M> {
                 Term::negative(VersionSet::singleton(version_index)),
             )]),
             kind: Kind::NotRoot(package_id, version_index),
+            contradiction_info: ContradicationInfo::not_contradicted(),
         }
     }
 
@@ -109,6 +146,7 @@ impl<M: Eq + Clone + Debug + Display> Incompatibility<M> {
         Self {
             package_terms: SmallMap::One([(package_id, term)]),
             kind: Kind::NoVersions(package_id, set),
+            contradiction_info: ContradicationInfo::not_contradicted(),
         }
     }
 
@@ -123,6 +161,7 @@ impl<M: Eq + Clone + Debug + Display> Incompatibility<M> {
         Self {
             package_terms: SmallMap::One([(package_id, term)]),
             kind: Kind::Custom(package_id, set, metadata),
+            contradiction_info: ContradicationInfo::not_contradicted(),
         }
     }
 
@@ -137,6 +176,7 @@ impl<M: Eq + Clone + Debug + Display> Incompatibility<M> {
         Self {
             package_terms: SmallMap::One([(package_id, term)]),
             kind: Kind::Custom(package_id, set, metadata),
+            contradiction_info: ContradicationInfo::not_contradicted(),
         }
     }
 
@@ -157,6 +197,7 @@ impl<M: Eq + Clone + Debug + Display> Incompatibility<M> {
                 ])
             },
             kind: Kind::FromDependencyOf(package_id, vs, pid2, set2),
+            contradiction_info: ContradicationInfo::not_contradicted(),
         }
     }
 
@@ -232,6 +273,7 @@ impl<M: Eq + Clone + Debug + Display> Incompatibility<M> {
         Self {
             package_terms,
             kind,
+            contradiction_info: ContradicationInfo::not_contradicted(),
         }
     }
 
@@ -250,6 +292,21 @@ impl<M: Eq + Clone + Debug + Display> Incompatibility<M> {
             let (&package_id, term) = self.package_terms.iter().next().unwrap();
             (package_id == root_package_id) && term.contains(root_version_index)
         }
+    }
+
+    /// Check if an incompatibility is contradicted.
+    pub(crate) fn is_contradicted(&self, last_valid_decision_levels: &[DecisionLevel]) -> bool {
+        self.contradiction_info
+            .is_contradicted(last_valid_decision_levels)
+    }
+
+    /// Set incompatibility contradication info.
+    pub(crate) fn set_contradication_info(
+        &mut self,
+        decision_level: DecisionLevel,
+        backtrack_generation: u32,
+    ) {
+        self.contradiction_info = ContradicationInfo::new(decision_level, backtrack_generation);
     }
 
     /// Get the term related to a given package (if it exists).
@@ -401,12 +458,14 @@ pub(crate) mod tests {
             let mut store = Arena::new();
             let i1 = store.alloc(Incompatibility {
                 package_terms: SmallMap::Two([(PackageId(1), t1), (PackageId(2), t2.negate())]),
-                kind: Kind::<String>::FromDependencyOf(PackageId(1), VersionSet::full(), PackageId(2), VersionSet::full())
+                kind: Kind::<String>::FromDependencyOf(PackageId(1), VersionSet::full(), PackageId(2), VersionSet::full()),
+                contradiction_info: ContradicationInfo::not_contradicted(),
             });
 
             let i2 = store.alloc(Incompatibility {
                 package_terms: SmallMap::Two([(PackageId(2), t2), (PackageId(3), t3)]),
-                kind: Kind::<String>::FromDependencyOf(PackageId(2), VersionSet::full(), PackageId(3), VersionSet::full())
+                kind: Kind::<String>::FromDependencyOf(PackageId(2), VersionSet::full(), PackageId(3), VersionSet::full()),
+                contradiction_info: ContradicationInfo::not_contradicted(),
             });
 
             let mut i3 = Map::default();
