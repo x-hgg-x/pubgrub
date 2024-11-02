@@ -7,9 +7,10 @@ use std::hash::BuildHasherDefault;
 
 use priority_queue::PriorityQueue;
 use rustc_hash::FxHasher;
+use smallvec::{smallvec, SmallVec};
 
 use crate::{
-    internal::{Arena, IncompDpId, IncompId, Incompatibility, Relation, SmallMap, SmallVec},
+    internal::{Arena, IncompDpId, IncompId, Incompatibility, Relation, SmallMap},
     DependencyProvider, FxIndexMap, Map, PackageArena, PackageId, SelectedDependencies, Term,
     VersionIndex, VersionSet,
 };
@@ -98,7 +99,7 @@ impl<DP: DependencyProvider> Display for PartialSolutionDisplay<'_, DP> {
 struct PackageAssignments<M: Eq + Clone + Debug + Display> {
     smallest_decision_level: DecisionLevel,
     highest_decision_level: DecisionLevel,
-    dated_derivations: SmallVec<DatedDerivation<M>>,
+    dated_derivations: SmallVec<[DatedDerivation<M>; 1]>,
     assignments_intersection: AssignmentsIntersection,
 }
 
@@ -299,7 +300,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
                 v.insert(PackageAssignments {
                     smallest_decision_level: self.current_decision_level,
                     highest_decision_level: self.current_decision_level,
-                    dated_derivations: SmallVec::One([dated_derivation]),
+                    dated_derivations: smallvec![dated_derivation],
                     assignments_intersection: AssignmentsIntersection::derivations(term),
                 });
             }
@@ -600,14 +601,15 @@ impl<M: Eq + Clone + Debug + Display> PackageAssignments<M> {
         start_term: Term,
         package_store: &PackageArena<DP::P>,
     ) -> (Option<IncompId<M>>, u32, DecisionLevel) {
-        let empty = Term::empty();
         // Indicate if we found a satisfier in the list of derivations, otherwise it will be the decision.
         let idx = self
             .dated_derivations
-            .as_slice()
             .partition_point(|dd| !dd.accumulated_intersection.is_disjoint(start_term));
         if let Some(dd) = self.dated_derivations.get(idx) {
-            debug_assert_eq!(dd.accumulated_intersection.intersection(start_term), empty);
+            debug_assert_eq!(
+                dd.accumulated_intersection.intersection(start_term),
+                Term::empty(),
+            );
             return (Some(dd.cause), dd.global_index, dd.decision_level);
         }
         // If it wasn't found in the derivations, it must be the decision which is last (if called in the right context).

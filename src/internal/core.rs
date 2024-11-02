@@ -5,10 +5,12 @@
 
 use std::sync::Arc;
 
+use smallvec::SmallVec;
+
 use crate::{
     internal::{
         Arena, DecisionLevel, IncompDpId, Incompatibility, PartialSolution, Relation,
-        SatisfierSearch, SmallVec,
+        SatisfierSearch,
     },
     DependencyProvider, DerivationTree, Map, PackageArena, PackageId, Set, Term, VersionIndex,
     VersionSet,
@@ -26,7 +28,7 @@ pub(crate) struct State<DP: DependencyProvider> {
     /// All incompatibilities expressing dependencies,
     /// with common dependents merged.
     #[allow(clippy::type_complexity)]
-    merged_dependencies: Map<(PackageId, PackageId), SmallVec<IncompDpId<DP>>>,
+    merged_dependencies: Map<(PackageId, PackageId), SmallVec<[IncompDpId<DP>; 4]>>,
 
     /// Partial solution.
     /// TODO: remove pub.
@@ -38,7 +40,7 @@ pub(crate) struct State<DP: DependencyProvider> {
     /// This is a stack of work to be done in `unit_propagation`.
     /// It can definitely be a local variable to that method, but
     /// this way we can reuse the same allocation for better performance.
-    unit_propagation_buffer: SmallVec<PackageId>,
+    unit_propagation_buffer: Vec<PackageId>,
 }
 
 impl<DP: DependencyProvider> State<DP> {
@@ -57,7 +59,7 @@ impl<DP: DependencyProvider> State<DP> {
             incompatibilities,
             partial_solution: PartialSolution::empty(),
             incompatibility_store,
-            unit_propagation_buffer: SmallVec::Empty,
+            unit_propagation_buffer: Vec::new(),
             merged_dependencies: Map::default(),
         }
     }
@@ -254,7 +256,7 @@ impl<DP: DependencyProvider> State<DP> {
         if let Some((pid1, pid2)) = self.incompatibility_store[id].as_dependency() {
             // If we are a dependency, there's a good chance we can be merged with a previous dependency
             let deps_lookup = self.merged_dependencies.entry((pid1, pid2)).or_default();
-            if let Some((past, merged)) = deps_lookup.as_mut_slice().iter_mut().find_map(|past| {
+            if let Some((past, merged)) = deps_lookup.iter_mut().find_map(|past| {
                 self.incompatibility_store[id]
                     .merge_dependents(&self.incompatibility_store[*past])
                     .map(|m| (past, m))
