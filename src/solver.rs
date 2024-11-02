@@ -53,7 +53,6 @@
 //! to satisfy the dependencies of that package and version pair.
 //! If there is no solution, the reason will be provided as clear as possible.
 
-use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
@@ -62,7 +61,7 @@ use log::{debug, info};
 
 use crate::{
     internal::{Incompatibility, State},
-    DependencyConstraints, DerivationTree, External, Map, NoSolutionError, PackageArena, PackageId,
+    DependencyConstraints, DerivationTree, External, NoSolutionError, PackageArena, PackageId,
     PubGrubError, SelectedDependencies, VersionIndex, VersionSet,
 };
 
@@ -77,7 +76,7 @@ pub fn resolve<DP: DependencyProvider>(
     let mut package_store = PackageArena::new();
     let package_id = package_store.insert(package);
     let mut state: State<DP> = State::init(package_id, version_index);
-    let mut added_dependencies: Map<PackageId, BTreeSet<VersionIndex>> = Map::default();
+    let mut added_dependencies = Vec::new();
     let mut next = package_id;
     loop {
         dependency_provider
@@ -151,9 +150,14 @@ pub fn resolve<DP: DependencyProvider>(
             ));
         }
 
-        let is_new_dependency = added_dependencies.entry(next).or_default().insert(v);
+        // Check if the package version has already been selected.
+        let idx = next.get() as usize;
+        if idx + 1 > added_dependencies.len() {
+            added_dependencies.resize(idx + 1, VersionSet::empty());
+        }
+        if !added_dependencies[idx].contains(v) {
+            added_dependencies[idx] = added_dependencies[idx].r#union(VersionSet::singleton(v));
 
-        if is_new_dependency {
             // Retrieve that package dependencies.
             let pid = next;
             let dependencies = dependency_provider
@@ -279,7 +283,6 @@ pub trait DependencyProvider {
 
     /// Retrieves the package dependencies.
     /// Return [Dependencies::Unavailable] if its dependencies are unavailable.
-    #[allow(clippy::type_complexity)]
     fn get_dependencies(
         &mut self,
         package_id: PackageId,

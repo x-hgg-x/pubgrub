@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 
 use crate::{
     internal::{
-        Arena, DecisionLevel, IncompDpId, Incompatibility, PartialSolution, Relation,
+        Arena, DecisionLevel, Id, IncompDpId, Incompatibility, PartialSolution, Relation,
         SatisfierSearch,
     },
     DependencyProvider, DerivationTree, Map, PackageArena, PackageId, Set, Term, VersionIndex,
@@ -22,12 +22,10 @@ pub(crate) struct State<DP: DependencyProvider> {
     root_package_id: PackageId,
     root_version_index: VersionIndex,
 
-    #[allow(clippy::type_complexity)]
-    incompatibilities: Map<PackageId, Vec<IncompDpId<DP>>>,
+    incompatibilities: Vec<Vec<IncompDpId<DP>>>,
 
     /// All incompatibilities expressing dependencies,
     /// with common dependents merged.
-    #[allow(clippy::type_complexity)]
     merged_dependencies: Map<(PackageId, PackageId), SmallVec<[IncompDpId<DP>; 4]>>,
 
     /// Partial solution.
@@ -51,13 +49,14 @@ impl<DP: DependencyProvider> State<DP> {
             root_package_id,
             root_version_index,
         ));
-        let mut incompatibilities = Map::default();
-        incompatibilities.insert(root_package_id, vec![not_root_id]);
+        let root_package_idx = root_package_id.get() as usize;
+        let mut incompatibilities = vec![vec![]; root_package_idx + 1];
+        incompatibilities[root_package_idx].push(not_root_id);
         Self {
             root_package_id,
             root_version_index,
             incompatibilities,
-            partial_solution: PartialSolution::empty(),
+            partial_solution: PartialSolution::empty(root_package_id),
             incompatibility_store,
             unit_propagation_buffer: Vec::new(),
             merged_dependencies: Map::default(),
@@ -107,7 +106,8 @@ impl<DP: DependencyProvider> State<DP> {
             // to evaluate first the newest incompatibilities.
             let mut conflict_id = None;
             // We only care about incompatibilities if it contains the current package.
-            for &incompat_id in self.incompatibilities[&current_package].iter().rev() {
+            let idx = current_package.get() as usize;
+            for &incompat_id in self.incompatibilities[idx].iter().rev() {
                 let current_incompat = &mut self.incompatibility_store[incompat_id];
                 if self.partial_solution.is_contradicted(current_incompat) {
                     continue;
@@ -172,7 +172,6 @@ impl<DP: DependencyProvider> State<DP> {
 
     /// Return the root cause or the terminal incompatibility.
     /// CF <https://github.com/dart-lang/pub/blob/master/doc/solver.md#unit-propagation>
-    #[allow(clippy::type_complexity)]
     #[cold]
     fn conflict_resolution(
         &mut self,
@@ -253,6 +252,14 @@ impl<DP: DependencyProvider> State<DP> {
     /// We could collapse them into { foo (1.0.0 ∪ 1.1.0), not bar ^1.0.0 }
     /// without having to check the existence of other versions though.
     fn merge_incompatibility(&mut self, mut id: IncompDpId<DP>) {
+        fn get_or_default<T>(v: &mut Vec<Vec<Id<T>>>, package_id: PackageId) -> &mut Vec<Id<T>> {
+            let pkg_idx = package_id.get() as usize;
+            if pkg_idx + 1 > v.len() {
+                v.resize(pkg_idx + 1, Vec::new());
+            }
+            &mut v[pkg_idx]
+        }
+
         if let Some((pid1, pid2)) = self.incompatibility_store[id].as_dependency() {
             // If we are a dependency, there's a good chance we can be merged with a previous dependency
             let deps_lookup = self.merged_dependencies.entry((pid1, pid2)).or_default();
@@ -263,10 +270,7 @@ impl<DP: DependencyProvider> State<DP> {
             }) {
                 let new = self.incompatibility_store.alloc(merged);
                 for (package_id, _) in self.incompatibility_store[new].iter() {
-                    self.incompatibilities
-                        .entry(package_id)
-                        .or_default()
-                        .retain(|id| id != past);
+                    get_or_default(&mut self.incompatibilities, package_id).retain(|id| id != past);
                 }
                 *past = new;
                 id = new;
@@ -275,13 +279,8 @@ impl<DP: DependencyProvider> State<DP> {
             }
         }
         for (package_id, term) in self.incompatibility_store[id].iter() {
-            if cfg!(debug_assertions) {
-                assert_ne!(term, Term::any());
-            }
-            self.incompatibilities
-                .entry(package_id)
-                .or_default()
-                .push(id);
+            debug_assert_ne!(term, Term::any());
+            get_or_default(&mut self.incompatibilities, package_id).push(id);
         }
     }
 
