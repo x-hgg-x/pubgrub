@@ -134,19 +134,41 @@ impl<M: Eq + Clone + Debug + Display> Display for DatedDerivation<M> {
     }
 }
 
-#[derive(Clone, Debug)]
-enum AssignmentsIntersection {
-    Decision((u32, VersionIndex, Term)),
-    Derivations(Term),
+#[derive(Clone, Debug, Default)]
+struct AssignmentsIntersection {
+    term: Term,
+    is_decision: bool,
+    decision_global_index: u32,
+    decision_version_index: VersionIndex,
+}
+
+impl AssignmentsIntersection {
+    fn decision(global_index: u32, version_index: VersionIndex) -> Self {
+        Self {
+            term: Term::exact(version_index),
+            is_decision: true,
+            decision_global_index: global_index,
+            decision_version_index: version_index,
+        }
+    }
+
+    fn derivations(term: Term) -> Self {
+        Self {
+            term,
+            ..Default::default()
+        }
+    }
 }
 
 impl Display for AssignmentsIntersection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Decision((lvl, version_index, _)) => {
-                write!(f, "Decision: level {}, v = {}", lvl, version_index.get())
-            }
-            Self::Derivations(term) => write!(f, "Derivations term: {}", term),
+        if self.is_decision {
+            let lvl = self.decision_global_index;
+            let version = self.decision_version_index.get();
+            write!(f, "Decision: level {lvl}, v = {version}")
+        } else {
+            let term = self.term;
+            write!(f, "Derivations term: {term}")
         }
     }
 }
@@ -193,25 +215,26 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
     pub(crate) fn add_decision(&mut self, package_id: PackageId, version_index: VersionIndex) {
         // Check that add_decision is never used in the wrong context.
         if cfg!(debug_assertions) {
-            match self.package_assignments.get_mut(&package_id) {
-                None => panic!("Derivations must already exist"),
-                Some(pa) => match &pa.assignments_intersection {
-                    // Cannot be called when a decision has already been taken.
-                    AssignmentsIntersection::Decision(_) => panic!("Already existing decision"),
-                    // Cannot be called if the versions is not contained in the terms' intersection.
-                    AssignmentsIntersection::Derivations(term) => {
-                        debug_assert!(
-                            term.contains(version_index),
-                            "{} was expected to be contained in {}",
-                            version_index.get(),
-                            term,
-                        )
-                    }
-                },
-            }
+            let pa = self
+                .package_assignments
+                .get_mut(&package_id)
+                .expect("Derivations must already exist");
+            // Cannot be called when a decision has already been taken.
+            assert!(
+                !pa.assignments_intersection.is_decision,
+                "Already existing decision",
+            );
+            // Cannot be called if the versions is not contained in the terms' intersection.
+            let term = pa.assignments_intersection.term;
+            assert!(
+                term.contains(version_index),
+                "{} was expected to be contained in {}",
+                version_index.get(),
+                term,
+            );
             assert_eq!(
                 self.changed_this_decision_level,
-                self.package_assignments.len()
+                self.package_assignments.len(),
             );
         }
         let new_idx = self.current_decision_level.0 as usize;
@@ -221,11 +244,8 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
             .get_full_mut(&package_id)
             .expect("Derivations must already exist");
         pa.highest_decision_level = self.current_decision_level;
-        pa.assignments_intersection = AssignmentsIntersection::Decision((
-            self.next_global_index,
-            version_index,
-            Term::exact(version_index),
-        ));
+        pa.assignments_intersection =
+            AssignmentsIntersection::decision(self.next_global_index, version_index);
         // Maintain that the beginning of the `package_assignments` Have all decisions in sorted order.
         if new_idx != old_idx {
             self.package_assignments.swap_indices(new_idx, old_idx);
@@ -254,21 +274,19 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
                 let idx = occupied.index();
                 let pa = occupied.get_mut();
                 pa.highest_decision_level = self.current_decision_level;
-                match &mut pa.assignments_intersection {
-                    // Check that add_derivation is never called in the wrong context.
-                    AssignmentsIntersection::Decision(_) => {
-                        panic!("add_derivation should not be called after a decision")
-                    }
-                    AssignmentsIntersection::Derivations(t) => {
-                        *t = t.intersection(dated_derivation.accumulated_intersection);
-                        dated_derivation.accumulated_intersection = *t;
-                        if t.is_positive() {
-                            // we can use `swap_indices` to make `changed_this_decision_level` only go down by 1
-                            // but the copying is slower then the larger search
-                            self.changed_this_decision_level =
-                                std::cmp::min(self.changed_this_decision_level, idx);
-                        }
-                    }
+                // Check that add_derivation is never called in the wrong context.
+                assert!(
+                    !pa.assignments_intersection.is_decision,
+                    "add_derivation should not be called after a decision",
+                );
+                let t = &mut pa.assignments_intersection.term;
+                *t = t.intersection(dated_derivation.accumulated_intersection);
+                dated_derivation.accumulated_intersection = *t;
+                if t.is_positive() {
+                    // we can use `swap_indices` to make `changed_this_decision_level` only go down by 1
+                    // but the copying is slower then the larger search
+                    self.changed_this_decision_level =
+                        std::cmp::min(self.changed_this_decision_level, idx);
                 }
                 pa.dated_derivations.push(dated_derivation);
             }
@@ -282,7 +300,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
                     smallest_decision_level: self.current_decision_level,
                     highest_decision_level: self.current_decision_level,
                     dated_derivations: SmallVec::One([dated_derivation]),
-                    assignments_intersection: AssignmentsIntersection::Derivations(term),
+                    assignments_intersection: AssignmentsIntersection::derivations(term),
                 });
             }
         }
@@ -328,11 +346,12 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
             .package_assignments
             .iter()
             .take(self.current_decision_level.0 as usize)
-            .map(|(&pid, pa)| match pa.assignments_intersection {
-                AssignmentsIntersection::Decision((_, version_index, _)) => (pid, version_index),
-                AssignmentsIntersection::Derivations(_) => {
-                    panic!("Derivations in the Decision part")
-                }
+            .map(|(&pid, pa)| {
+                assert!(
+                    pa.assignments_intersection.is_decision,
+                    "Derivations in the Decision part",
+                );
+                (pid, pa.assignments_intersection.decision_version_index)
             })
             .collect::<Map<_, _>>();
 
@@ -375,7 +394,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
 
                 // Reset the assignments intersection.
                 pa.assignments_intersection =
-                    AssignmentsIntersection::Derivations(last.accumulated_intersection);
+                    AssignmentsIntersection::derivations(last.accumulated_intersection);
                 true
             }
         });
@@ -463,7 +482,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
     pub(crate) fn term_intersection_for_package(&self, package_id: PackageId) -> Option<Term> {
         self.package_assignments
             .get(&package_id)
-            .map(|pa| pa.assignments_intersection.term())
+            .map(|pa| pa.assignments_intersection.term)
     }
 
     /// Figure out if the satisfier and previous satisfier are of different decision levels.
@@ -545,10 +564,11 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
         let accum_term = if let Some(cause) = satisfier_cause {
             store[cause].get(satisfier_pid).unwrap().negate()
         } else {
-            match satisfier_pa.assignments_intersection {
-                AssignmentsIntersection::Derivations(_) => panic!("must be a decision"),
-                AssignmentsIntersection::Decision((_, _, term)) => term,
-            }
+            assert!(
+                satisfier_pa.assignments_intersection.is_decision,
+                "must be a decision",
+            );
+            satisfier_pa.assignments_intersection.term
         };
 
         let incompat_term = incompat
@@ -590,49 +610,37 @@ impl<M: Eq + Clone + Debug + Display> PackageAssignments<M> {
             debug_assert_eq!(dd.accumulated_intersection.intersection(start_term), empty);
             return (Some(dd.cause), dd.global_index, dd.decision_level);
         }
-        // If it wasn't found in the derivations,
-        // it must be the decision which is last (if called in the right context).
-        match &self.assignments_intersection {
-            AssignmentsIntersection::Decision((global_index, _, _)) => {
-                (None, *global_index, self.highest_decision_level)
-            }
-            AssignmentsIntersection::Derivations(accumulated_intersection) => {
-                let p = package_store.pkg(package_id).unwrap();
-                unreachable!(
-                    "while processing package {p}: \
-                    accum_term = {accumulated_intersection} has overlap with incompat_term = {start_term}, \
-                    which means the last assignment should have been a decision, \
-                    but instead it was a derivation. This shouldn't be possible! \
-                    (Maybe your Version ordering is broken?)"
-                )
-            }
+        // If it wasn't found in the derivations, it must be the decision which is last (if called in the right context).
+        let AssignmentsIntersection {
+            term,
+            is_decision,
+            decision_global_index,
+            ..
+        } = self.assignments_intersection;
+        if !is_decision {
+            let p = package_store.pkg(package_id).unwrap();
+            unreachable!(
+                "while processing package {p}: \
+                accum_term = {term} has overlap with incompat_term = {start_term}, \
+                which means the last assignment should have been a decision, \
+                but instead it was a derivation. This shouldn't be possible! \
+                (Maybe your Version ordering is broken?)"
+            )
         }
+        (None, decision_global_index, self.highest_decision_level)
     }
 }
 
 impl AssignmentsIntersection {
-    /// Returns the term intersection of all assignments (decision included).
-    fn term(&self) -> Term {
-        match *self {
-            Self::Decision((_, _, term)) => term,
-            Self::Derivations(term) => term,
-        }
-    }
-
     /// A package is a potential pick if there isn't an already
     /// selected version (no "decision")
     /// and if it contains at least one positive derivation term
     /// in the partial solution.
     fn potential_package_filter(&self, package_id: PackageId) -> Option<(PackageId, VersionSet)> {
-        match self {
-            Self::Decision(_) => None,
-            Self::Derivations(term_intersection) => {
-                if term_intersection.is_positive() {
-                    Some((package_id, term_intersection.unwrap_positive()))
-                } else {
-                    None
-                }
-            }
+        if !self.is_decision && self.term.is_positive() {
+            Some((package_id, self.term.unwrap_positive()))
+        } else {
+            None
         }
     }
 }
