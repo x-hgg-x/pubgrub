@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use std::fmt::{Debug, Display};
+use std::hash::Hash;
+
 use pubgrub::{
-    Dependencies, DependencyProvider, Map, OfflineDependencyProvider, Package, PubGrubError,
-    SelectedDependencies, VersionSet,
+    DependencyProvider, Map, OfflineDependencyProvider, PubGrubError, SelectedDependencies,
+    VersionSet,
 };
 use varisat::ExtendFormula;
 
@@ -35,13 +38,13 @@ fn sat_at_most_one(solver: &mut impl ExtendFormula, vars: &[varisat::Var]) {
 ///
 /// The SAT library does not optimize for the newer version,
 /// so the selected packages may not match the real resolver.
-pub struct SatResolve<P: Package, VS: VersionSet> {
+pub struct SatResolve<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> {
     solver: varisat::Solver<'static>,
     all_versions_by_p: Map<P, Vec<(VS::V, varisat::Var)>>,
 }
 
-impl<P: Package, VS: VersionSet> SatResolve<P, VS> {
-    pub fn new(dp: &OfflineDependencyProvider<P, VS>) -> Self {
+impl<P: Debug + Display + Clone + Eq + Hash, VS: VersionSet> SatResolve<P, VS> {
+    pub fn new(dp: &mut OfflineDependencyProvider<P, VS>) -> Self {
         let mut cnf = varisat::CnfFormula::new();
 
         let mut all_versions = vec![];
@@ -64,11 +67,8 @@ impl<P: Package, VS: VersionSet> SatResolve<P, VS> {
 
         // active packages need each of there `deps` to be satisfied
         for (p, v, var) in &all_versions {
-            let deps = match dp.get_dependencies(p, v).unwrap() {
-                Dependencies::Unavailable(_) => panic!(),
-                Dependencies::Available(d) => d,
-            };
-            for (p1, range) in &deps {
+            let deps = dp.dependencies(p, v).unwrap();
+            for (p1, range) in deps {
                 let empty_vec = vec![];
                 let mut matches: Vec<varisat::Lit> = all_versions_by_p
                     .get(p1)

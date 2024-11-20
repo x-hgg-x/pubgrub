@@ -54,11 +54,11 @@ fn main() {
     dependency_provider.add_dependencies("y", (2, 0, 0), []);
 
     // Run the algorithm.
-    match resolve(&dependency_provider, "root", (1, 0, 0)) {
+    match resolve(&mut dependency_provider, "root", (1, 0, 0)) {
         Ok(sol) => println!("{:?}", sol),
-        Err(PubGrubError::NoSolution(mut derivation_tree)) => {
-            derivation_tree.collapse_no_versions();
-            eprintln!("{}", DefaultStringReporter::report(&derivation_tree));
+        Err(PubGrubError::NoSolution(mut error)) => {
+            error.derivation_tree.collapse_no_versions();
+            eprintln!("{}", DefaultStringReporter::report(&error));
             std::process::exit(1);
         }
         Err(err) => panic!("{:?}", err),

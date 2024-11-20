@@ -1,24 +1,39 @@
 // SPDX-License-Identifier: MPL-2.0
-
+use std::fmt::{Debug, Display};
+use std::hash::Hash;
 use std::time::Duration;
 
 use criterion::*;
+use pubgrub::{resolve, Map, OfflineDependencyProvider, Range, SemanticVersion, VersionSet};
 use serde::de::Deserialize;
 
-use pubgrub::{resolve, OfflineDependencyProvider, Package, Range, SemanticVersion, VersionSet};
-
-fn bench<'a, P: Package + Deserialize<'a>, VS: VersionSet + Deserialize<'a>>(
+fn bench<
+    'a,
+    P: Debug + Display + Clone + Eq + Hash + Deserialize<'a>,
+    VS: VersionSet + Deserialize<'a>,
+>(
     b: &mut Bencher,
     case: &'a str,
 ) where
     <VS as VersionSet>::V: Deserialize<'a>,
 {
-    let dependency_provider: OfflineDependencyProvider<P, VS> = ron::de::from_str(case).unwrap();
+    let mut dependency_provider: OfflineDependencyProvider<P, VS> =
+        ron::de::from_str(case).unwrap();
+
+    let dependencies = dependency_provider
+        .packages()
+        .map(|p| {
+            (
+                p.clone(),
+                dependency_provider.versions(p).unwrap().cloned().collect(),
+            )
+        })
+        .collect::<Map<_, Vec<_>>>();
 
     b.iter(|| {
-        for p in dependency_provider.packages() {
-            for n in dependency_provider.versions(p).unwrap() {
-                let _ = resolve(&dependency_provider, p.clone(), n.clone());
+        for (p, versions) in &dependencies {
+            for n in versions {
+                let _ = resolve(&mut dependency_provider, p.clone(), n.clone());
             }
         }
     });

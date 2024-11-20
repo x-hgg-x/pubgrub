@@ -4,21 +4,27 @@
 
 use thiserror::Error;
 
-use crate::{DependencyProvider, DerivationTree};
+use crate::{DependencyProvider, DerivationTree, PackageArena};
 
 /// There is no solution for this set of dependencies.
-pub type NoSolutionError<DP> = DerivationTree<
-    <DP as DependencyProvider>::P,
-    <DP as DependencyProvider>::VS,
-    <DP as DependencyProvider>::M,
->;
+#[derive(Debug, Clone)]
+pub struct NoSolutionError<DP: DependencyProvider> {
+    /// Package store
+    pub package_store: PackageArena<DP::P>,
+    /// Derivate tree
+    pub derivation_tree: DerivationTree<DP::VS, DP::M>,
+}
 
 /// Errors that may occur while solving dependencies.
 #[derive(Error)]
 pub enum PubGrubError<DP: DependencyProvider> {
+    /// Root package name doesn't exist.
+    #[error("Root package name doesn't exist")]
+    NoRoot,
+
     /// There is no solution for this set of dependencies.
     #[error("No solution")]
-    NoSolution(NoSolutionError<DP>),
+    NoSolution(Box<NoSolutionError<DP>>),
 
     /// Error arising when the implementer of [DependencyProvider] returned an error in the method
     /// [get_dependencies](DependencyProvider::get_dependencies).
@@ -50,7 +56,7 @@ pub enum PubGrubError<DP: DependencyProvider> {
 
 impl<DP: DependencyProvider> From<NoSolutionError<DP>> for PubGrubError<DP> {
     fn from(err: NoSolutionError<DP>) -> Self {
-        Self::NoSolution(err)
+        Self::NoSolution(err.into())
     }
 }
 
@@ -60,7 +66,12 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoSolution(err) => f.debug_tuple("NoSolution").field(&err).finish(),
+            Self::NoRoot => f.debug_struct("NoRoot").finish(),
+            Self::NoSolution(err) => f
+                .debug_struct("NoSolution")
+                .field("package_store", &err.package_store)
+                .field("derivation_tree", &err.derivation_tree)
+                .finish(),
             Self::ErrorRetrievingDependencies {
                 package,
                 version,

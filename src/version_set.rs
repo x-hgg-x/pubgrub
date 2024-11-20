@@ -71,7 +71,7 @@ pub trait VersionSet: Debug + Display + Clone + Eq {
     }
 }
 
-impl<T: Debug + Display + Clone + Eq + Ord> VersionSet for Ranges<T> {
+impl<T: Debug + Display + Clone + Ord> VersionSet for Ranges<T> {
     type V = T;
 
     fn empty() -> Self {

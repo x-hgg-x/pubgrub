@@ -1,64 +1,93 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::fmt::{Debug, Display};
+use std::hash::Hash;
 
-use pubgrub::{resolve, Dependencies, DependencyProvider, OfflineDependencyProvider, Ranges};
+use pubgrub::{
+    resolve, Dependencies, DependencyConstraints, DependencyProvider, Map,
+    OfflineDependencyProvider, PackageArena, PackageId, Ranges,
+};
 
 type NumVS = Ranges<u32>;
+type CachedDeps<V, VS> = RefCell<Map<PackageId, BTreeMap<V, DependencyConstraints<VS>>>>;
 
 // An example implementing caching dependency provider that will
 // store queried dependencies in memory and check them before querying more from remote.
-struct CachingDependencyProvider<DP: DependencyProvider> {
+struct CachingDependencyProvider<DP: DependencyProvider>
+where
+    DP::P: Debug + Display + Clone + Eq + Hash,
+{
     remote_dependencies: DP,
-    cached_dependencies: RefCell<OfflineDependencyProvider<DP::P, DP::VS>>,
+    cached_dependencies: CachedDeps<DP::V, DP::VS>,
 }
 
-impl<DP: DependencyProvider> CachingDependencyProvider<DP> {
+impl<DP: DependencyProvider> CachingDependencyProvider<DP>
+where
+    DP::P: Debug + Display + Clone + Eq + Hash,
+{
     pub fn new(remote_dependencies_provider: DP) -> Self {
         CachingDependencyProvider {
             remote_dependencies: remote_dependencies_provider,
-            cached_dependencies: RefCell::new(OfflineDependencyProvider::new()),
+            cached_dependencies: Default::default(),
         }
     }
 }
 
-impl<DP: DependencyProvider<M = String>> DependencyProvider for CachingDependencyProvider<DP> {
-    // Caches dependencies if they were already queried
+impl<DP: DependencyProvider<M = &'static str>> DependencyProvider for CachingDependencyProvider<DP>
+where
+    DP::P: Debug + Display + Clone + Eq + Hash,
+{
+    // Cache dependencies if they were already queried
     fn get_dependencies(
-        &self,
-        package: &DP::P,
+        &mut self,
+        package_id: PackageId,
         version: &DP::V,
-    ) -> Result<Dependencies<DP::P, DP::VS, DP::M>, DP::Err> {
+        package_store: &mut PackageArena<Self::P>,
+    ) -> Result<Dependencies<DP::VS, DP::M>, DP::Err> {
         let mut cache = self.cached_dependencies.borrow_mut();
-        match cache.get_dependencies(package, version) {
-            Ok(Dependencies::Unavailable(_)) => {
-                let dependencies = self.remote_dependencies.get_dependencies(package, version);
-                match dependencies {
-                    Ok(Dependencies::Available(dependencies)) => {
-                        cache.add_dependencies(
-                            package.clone(),
-                            version.clone(),
-                            dependencies.clone(),
-                        );
-                        Ok(Dependencies::Available(dependencies))
-                    }
-                    Ok(Dependencies::Unavailable(reason)) => Ok(Dependencies::Unavailable(reason)),
-                    error @ Err(_) => error,
-                }
+        if let Some(deps) = cache.get(&package_id).and_then(|vmap| vmap.get(version)) {
+            return Ok(Dependencies::Available(deps.clone()));
+        }
+
+        match self
+            .remote_dependencies
+            .get_dependencies(package_id, version, package_store)
+        {
+            Ok(Dependencies::Available(deps)) => {
+                cache
+                    .entry(package_id)
+                    .or_default()
+                    .insert(version.clone(), deps.clone());
+                Ok(Dependencies::Available(deps))
             }
-            Ok(dependencies) => Ok(dependencies),
-            Err(_) => unreachable!(),
+
+            Ok(Dependencies::Unavailable(reason)) => Ok(Dependencies::Unavailable(reason)),
+            error @ Err(_) => error,
         }
     }
 
-    fn choose_version(&self, package: &DP::P, ranges: &DP::VS) -> Result<Option<DP::V>, DP::Err> {
-        self.remote_dependencies.choose_version(package, ranges)
+    fn choose_version(
+        &mut self,
+        package_id: PackageId,
+        ranges: &DP::VS,
+        package_store: &PackageArena<Self::P>,
+    ) -> Result<Option<DP::V>, DP::Err> {
+        self.remote_dependencies
+            .choose_version(package_id, ranges, package_store)
     }
 
     type Priority = DP::Priority;
 
-    fn prioritize(&self, package: &DP::P, ranges: &DP::VS) -> Self::Priority {
-        self.remote_dependencies.prioritize(package, ranges)
+    fn prioritize(
+        &mut self,
+        package_id: PackageId,
+        ranges: &DP::VS,
+        package_store: &PackageArena<Self::P>,
+    ) -> Self::Priority {
+        self.remote_dependencies
+            .prioritize(package_id, ranges, package_store)
     }
 
     type Err = DP::Err;
@@ -76,9 +105,9 @@ fn main() {
     // Add dependencies as needed. Here only root package is added.
     remote_dependencies_provider.add_dependencies("root", 1u32, Vec::new());
 
-    let caching_dependencies_provider =
+    let mut caching_dependencies_provider =
         CachingDependencyProvider::new(remote_dependencies_provider);
 
-    let solution = resolve(&caching_dependencies_provider, "root", 1u32);
+    let solution = resolve(&mut caching_dependencies_provider, "root", 1u32);
     println!("Solution: {:?}", solution);
 }
