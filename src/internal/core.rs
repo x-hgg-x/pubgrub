@@ -97,7 +97,7 @@ impl<DP: DependencyProvider> State<DP> {
         &mut self,
         package_id: PackageId,
         package_store: &PackageArena<DP::P>,
-        dependency_provider: &DP,
+        dependency_provider: &mut DP,
     ) -> Result<(), DerivationTree<DP::M>> {
         self.unit_propagation_buffer.clear();
         self.unit_propagation_buffer.push(package_id);
@@ -152,6 +152,12 @@ impl<DP: DependencyProvider> State<DP> {
                     .map_err(|terminal_incompat_id| {
                         self.build_derivation_tree(terminal_incompat_id)
                     })?;
+                dependency_provider.register_conflict(
+                    self.incompatibility_store[root_cause]
+                        .iter()
+                        .map(|(pid, _)| pid),
+                    package_store,
+                );
                 self.unit_propagation_buffer.clear();
                 self.unit_propagation_buffer.push(package_almost);
                 let root_incompat = &mut self.incompatibility_store[root_cause];

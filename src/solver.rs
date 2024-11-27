@@ -312,4 +312,14 @@ pub trait DependencyProvider {
         package: &'a Self::P,
         version_set: VersionSet,
     ) -> impl Display + 'a;
+
+    /// Register a conflict for the given packages.
+    fn register_conflict(
+        &mut self,
+        package_ids: impl Iterator<Item = PackageId>,
+        package_store: &PackageArena<Self::P>,
+    ) {
+        let _ = package_ids;
+        let _ = package_store;
+    }
 }

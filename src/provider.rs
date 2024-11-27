@@ -69,6 +69,7 @@ impl<V: Debug + Display + Clone + Ord> VersionRanges for Ranges<V> {
 pub struct OfflineDependencyProvider<P: Debug + Display + Clone + Eq + Hash, R: VersionRanges> {
     #[allow(clippy::type_complexity)]
     dependencies: Map<P, Vec<(R::V, Map<P, R>)>>,
+    conflicts: Map<P, u64>,
 }
 
 #[cfg(feature = "serde")]
@@ -112,6 +113,7 @@ where
                 .into_iter()
                 .map(|(p, versions)| (p, versions.into_iter().collect()))
                 .collect(),
+            conflicts: Map::default(),
         })
     }
 }
@@ -121,6 +123,7 @@ impl<P: Debug + Display + Clone + Eq + Hash, R: VersionRanges> OfflineDependency
     pub fn new() -> Self {
         Self {
             dependencies: Map::default(),
+            conflicts: Map::default(),
         }
     }
 
@@ -255,9 +258,20 @@ impl<P: Debug + Display + Clone + Eq + Hash, R: VersionRanges> DependencyProvide
         &mut self,
         package_id: PackageId,
         set: VersionSet,
-        _: &PackageArena<Self::P>,
+        package_store: &PackageArena<Self::P>,
     ) -> Self::Priority {
-        Reverse(((set.count() as u64) << 32) + package_id.get() as u64)
+        let version_count = set.count();
+        if version_count == 0 {
+            return Reverse(0);
+        }
+        let pkg = match package_store.pkg(package_id).unwrap() {
+            PackageVersionWrapper::Pkg(p) => p.pkg(),
+            PackageVersionWrapper::VirtualPkg(p) => p.pkg(),
+            PackageVersionWrapper::VirtualDep(p) => p.pkg(),
+        };
+        let conflict_count = self.conflicts.get(pkg).copied().unwrap_or_default();
+
+        Reverse(((u32::MAX as u64).saturating_sub(conflict_count) << 6) + version_count as u64)
     }
 
     fn get_dependencies(
@@ -396,6 +410,22 @@ impl<P: Debug + Display + Clone + Eq + Hash, R: VersionRanges> DependencyProvide
 
                 format!("{package} @ {version_indices:?}")
             }
+        }
+    }
+
+    #[inline]
+    fn register_conflict(
+        &mut self,
+        package_ids: impl Iterator<Item = PackageId>,
+        package_store: &PackageArena<Self::P>,
+    ) {
+        for package_id in package_ids {
+            let pkg = match package_store.pkg(package_id).unwrap() {
+                PackageVersionWrapper::Pkg(p) => p.pkg(),
+                PackageVersionWrapper::VirtualPkg(p) => p.pkg(),
+                PackageVersionWrapper::VirtualDep(p) => p.pkg(),
+            };
+            *self.conflicts.entry(pkg.clone()).or_default() += 1;
         }
     }
 }
